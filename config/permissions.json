@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "admin": {
+      "description": "Full administrative access.",
+      "accounts": []
+    },
+    "navigation.view": {
+      "description": "View the navigation demo module.",
+      "accounts": []
+    }
+  }
+}

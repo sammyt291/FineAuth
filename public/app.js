@@ -1,15 +1,17 @@
 const mainContent = document.getElementById('main-content');
 const nav = document.getElementById('top-nav');
+const footer = document.getElementById('footer');
 
 const state = {
   modules: [],
   account: null,
   esiQueue: [],
   socketConnected: false,
-  accounts: [],
   loginError: null,
-  accountsError: null
+  esiStatus: null
 };
+
+let socket;
 
 const helpers = {
   createGridContainer(items) {
@@ -53,7 +55,7 @@ function getDefaultModule() {
   if (!state.account) {
     return 'landing';
   }
-  return state.account.type === 'static' ? 'accounts' : 'home';
+  return 'home';
 }
 
 function renderNav() {
@@ -63,6 +65,9 @@ function renderNav() {
     return;
   }
   nav.style.display = 'block';
+  const container = document.createElement('div');
+  container.className = 'nav-inner';
+
   const list = document.createElement('ul');
   list.className = 'nav-list';
 
@@ -70,7 +75,7 @@ function renderNav() {
     if (!module.mainPage || module.name === 'landing') {
       return false;
     }
-    if (module.name === 'accounts' && state.account.type !== 'static') {
+    if (module.hidden || module.config?.region === 'footer') {
       return false;
     }
     return true;
@@ -97,7 +102,18 @@ function renderNav() {
     list.appendChild(item);
   });
 
-  nav.appendChild(list);
+  const actions = document.createElement('div');
+  actions.className = 'nav-actions';
+  const logoutButton = document.createElement('button');
+  logoutButton.className = 'button secondary nav-button';
+  logoutButton.type = 'button';
+  logoutButton.textContent = 'Log out';
+  logoutButton.addEventListener('click', handleLogout);
+  actions.appendChild(logoutButton);
+
+  container.appendChild(list);
+  container.appendChild(actions);
+  nav.appendChild(container);
 }
 
 function renderLanding() {
@@ -117,47 +133,7 @@ function renderLanding() {
   title.textContent = 'FineAuth';
 
   const text = document.createElement('p');
-  text.textContent = 'Authenticate your alliance and manage EVE Online access with confidence.';
-
-  const form = document.createElement('form');
-  form.className = 'login-form';
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const username = form.querySelector('#static-username').value.trim();
-    const password = form.querySelector('#static-password').value;
-    handleAdminLogin(username, password);
-  });
-
-  const usernameLabel = document.createElement('label');
-  usernameLabel.textContent = 'Static Admin Username';
-  usernameLabel.setAttribute('for', 'static-username');
-  const usernameInput = document.createElement('input');
-  usernameInput.id = 'static-username';
-  usernameInput.name = 'username';
-  usernameInput.type = 'text';
-  usernameInput.autocomplete = 'username';
-  usernameInput.required = true;
-
-  const passwordLabel = document.createElement('label');
-  passwordLabel.textContent = 'Static Admin Password';
-  passwordLabel.setAttribute('for', 'static-password');
-  const passwordInput = document.createElement('input');
-  passwordInput.id = 'static-password';
-  passwordInput.name = 'password';
-  passwordInput.type = 'password';
-  passwordInput.autocomplete = 'current-password';
-  passwordInput.required = true;
-
-  const adminButton = document.createElement('button');
-  adminButton.className = 'button';
-  adminButton.type = 'submit';
-  adminButton.textContent = 'Login with Static Admin';
-
-  form.appendChild(usernameLabel);
-  form.appendChild(usernameInput);
-  form.appendChild(passwordLabel);
-  form.appendChild(passwordInput);
-  form.appendChild(adminButton);
+  text.textContent = 'Authenticate your alliance and manage EVE Online access with ESI.';
 
   const buttonGroup = document.createElement('div');
   buttonGroup.className = 'button-group';
@@ -179,7 +155,6 @@ function renderLanding() {
     errorText.textContent = state.loginError;
     card.appendChild(errorText);
   }
-  card.appendChild(form);
   card.appendChild(buttonGroup);
   container.appendChild(card);
   mainContent.appendChild(container);
@@ -199,6 +174,7 @@ function renderHome() {
   status.innerHTML = `
     <span>Socket.io: ${state.socketConnected ? 'Connected' : 'Disconnected'}</span>
     <span>Account: ${state.account ? state.account.name : 'Not signed in'}</span>
+    <span>Role: ${state.account?.isAdmin ? 'Admin' : 'Member'}</span>
   `;
   card.appendChild(status);
 
@@ -252,10 +228,6 @@ function renderModulePage(moduleName) {
     renderHome();
     return;
   }
-  if (moduleName === 'accounts') {
-    renderAccountManagement();
-    return;
-  }
   if (moduleName === 'navigation') {
     renderNavigationModule();
     return;
@@ -265,7 +237,7 @@ function renderModulePage(moduleName) {
     renderHome();
     return;
   }
-  if (!moduleData.builtIn) {
+  if (moduleData.name !== 'home' && moduleData.name !== 'landing') {
     const iframe = document.createElement('iframe');
     iframe.src = `/modules/${moduleName}/${moduleData.mainPage}`;
     iframe.style.width = '100%';
@@ -301,71 +273,6 @@ function renderNavigationModule() {
   mainContent.appendChild(card);
 }
 
-function renderAccountManagement() {
-  if (!state.account || state.account.type !== 'static') {
-    renderHome();
-    return;
-  }
-  mainContent.innerHTML = '';
-  const card = document.createElement('div');
-  card.className = 'card';
-
-  const title = document.createElement('h2');
-  title.textContent = 'Account Management';
-  card.appendChild(title);
-
-  const description = document.createElement('p');
-  description.textContent =
-    'Delete accounts when needed. You cannot delete the account you are currently using.';
-  card.appendChild(description);
-
-  if (state.accountsError) {
-    const errorText = document.createElement('p');
-    errorText.className = 'error-text';
-    errorText.textContent = state.accountsError;
-    card.appendChild(errorText);
-  }
-
-  const list = document.createElement('div');
-  list.className = 'account-list';
-
-  if (!state.accounts.length) {
-    const empty = document.createElement('p');
-    empty.textContent = 'No accounts found.';
-    list.appendChild(empty);
-  } else {
-    state.accounts.forEach((account) => {
-      const row = document.createElement('div');
-      row.className = 'account-row';
-
-      const info = document.createElement('div');
-      info.className = 'account-info';
-      info.innerHTML = `
-        <strong>${account.name}</strong>
-        <span class="account-meta">${account.type}</span>
-        <span class="account-meta">${account.createdAt}</span>
-      `;
-
-      const actions = document.createElement('div');
-      actions.className = 'account-actions';
-      const deleteButton = document.createElement('button');
-      deleteButton.className = 'button secondary';
-      deleteButton.textContent =
-        account.id === state.account.id ? 'Current Account' : 'Delete';
-      deleteButton.disabled = account.id === state.account.id;
-      deleteButton.addEventListener('click', () => deleteAccountById(account.id));
-      actions.appendChild(deleteButton);
-
-      row.appendChild(info);
-      row.appendChild(actions);
-      list.appendChild(row);
-    });
-  }
-
-  card.appendChild(list);
-  mainContent.appendChild(card);
-}
-
 function navigate() {
   if (!state.account) {
     renderLanding();
@@ -387,100 +294,104 @@ function navigate() {
   }
 }
 
-async function fetchModules() {
-  const response = await fetch('/api/modules');
-  const data = await response.json();
-  state.modules = data.modules;
+function handleEsiLogin() {
+  if (!socket || !socket.connected) {
+    state.loginError = 'Socket is not connected. Try again shortly.';
+    renderLanding();
+    return;
+  }
+  socket.emit('esi:login', null, (response) => {
+    if (response?.url) {
+      window.location.href = response.url;
+      return;
+    }
+    state.loginError = response?.error ?? 'Failed to start ESI login.';
+    renderLanding();
+  });
+}
+
+function handleLogout() {
+  localStorage.removeItem('fineauth_token');
+  state.account = null;
+  state.loginError = null;
   renderNav();
   navigate();
+  renderFooter();
 }
 
-async function checkSession() {
-  const token = localStorage.getItem('fineauth_token');
-  if (!token) {
+function requestSession() {
+  if (!socket) {
     return;
   }
-  const response = await fetch('/api/session', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (response.ok) {
-    const data = await response.json();
-    state.account = data.account;
-    state.loginError = null;
-    if (state.account.type === 'static') {
-      await fetchAccounts();
+  const token = localStorage.getItem('fineauth_token');
+  socket.emit('session:request', { token }, (response) => {
+    if (response?.account) {
+      state.account = response.account;
+      state.loginError = null;
+    } else {
+      state.account = null;
+      if (response?.error) {
+        localStorage.removeItem('fineauth_token');
+      }
     }
-  } else {
-    localStorage.removeItem('fineauth_token');
-    state.account = null;
-  }
+    renderNav();
+    navigate();
+    renderFooter();
+  });
 }
 
-async function fetchAccounts() {
-  const token = localStorage.getItem('fineauth_token');
-  if (!token) {
+function renderFooter() {
+  if (!footer) {
     return;
   }
-  const response = await fetch('/api/accounts', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (response.ok) {
-    const data = await response.json();
-    state.accounts = data.accounts;
-    state.accountsError = null;
-  } else {
-    state.accountsError = 'Unable to load accounts.';
-  }
-}
-
-async function deleteAccountById(accountId) {
-  const token = localStorage.getItem('fineauth_token');
-  if (!token) {
+  const footerModule = state.modules.find(
+    (module) => module.config?.region === 'footer' || module.name === 'footer'
+  );
+  if (!footerModule) {
+    footer.style.display = 'none';
+    footer.innerHTML = '';
     return;
   }
-  const response = await fetch(`/api/accounts/${accountId}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (response.ok) {
-    await fetchAccounts();
-    renderAccountManagement();
-  } else {
-    state.accountsError = 'Failed to delete account.';
-    renderAccountManagement();
-  }
-}
-
-async function handleAdminLogin(username, password) {
-  if (!username || !password) {
-    state.loginError = 'Enter the static admin username and password.';
-    renderLanding();
-    return;
-  }
-  const response = await fetch('/api/login/admin', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  });
-  if (response.ok) {
-    const data = await response.json();
-    localStorage.setItem('fineauth_token', data.token);
-    await checkSession();
-    window.location.hash = `#/module/${getDefaultModule()}`;
-  } else {
-    state.loginError = 'Static admin login failed.';
-    renderLanding();
-  }
-}
-
-async function handleEsiLogin() {
-  window.location.href = '/api/esi/login';
+  footer.style.display = 'block';
+  const status = state.esiStatus ?? {
+    status: 'unknown',
+    players: null,
+    lastUpdated: null,
+    error: null
+  };
+  const statusText =
+    status.status === 'online'
+      ? 'Online'
+      : status.status === 'unavailable'
+        ? 'Unavailable'
+        : 'Unknown';
+  const playersText =
+    typeof status.players === 'number' ? status.players.toLocaleString() : 'N/A';
+  footer.innerHTML = `
+    <div class="footer-inner">
+      <div class="footer-status">
+        <span class="footer-label">ESI Status:</span>
+        <span>${statusText}</span>
+      </div>
+      <div class="footer-status">
+        <span class="footer-label">Tranquility Players:</span>
+        <span>${playersText}</span>
+      </div>
+    </div>
+  `;
 }
 
 function setupSocket() {
-  const socket = io();
+  socket = io();
   socket.on('connect', () => {
     state.socketConnected = true;
+    requestSession();
+    socket.emit('esi:status:request', null, (status) => {
+      if (status) {
+        state.esiStatus = status;
+        renderFooter();
+      }
+    });
     navigate();
   });
   socket.on('disconnect', () => {
@@ -501,13 +412,18 @@ function setupSocket() {
     if (moduleName && !modules.find((module) => module.name === moduleName)) {
       window.location.hash = `#/module/${getDefaultModule()}`;
     }
+    renderFooter();
+  });
+  socket.on('esi:status', (status) => {
+    state.esiStatus = status;
+    renderFooter();
+  });
+  socket.on('permissions:updated', () => {
+    requestSession();
   });
 }
 
 window.addEventListener('hashchange', navigate);
-
-await checkSession();
-await fetchModules();
 setupSocket();
 
 window.location.hash = `#/module/${getDefaultModule()}`;

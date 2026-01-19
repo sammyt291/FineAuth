@@ -2,3 +2,4 @@ node_modules/
 modules_loaded/
 data.sqlite
 config/ssl/
+modules/*.zip
