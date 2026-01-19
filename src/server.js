@@ -645,11 +645,26 @@ app.get('/callback', async (req, res) => {
           : 'ESI login'
     });
 
-    const characterDetails = await fetchCharacterDetails({
-      name: verifyData.CharacterName,
-      characterId: verifyData.CharacterID,
-      cache: true
-    });
+    let characterDetails = {
+      characterId: null,
+      corporationId: null,
+      corporationName: null,
+      allianceId: null,
+      allianceName: null
+    };
+    try {
+      characterDetails = await fetchCharacterDetails({
+        name: verifyData.CharacterName,
+        characterId: verifyData.CharacterID,
+        cache: true
+      });
+    } catch (error) {
+      logEvent('esi', 'Failed to fetch character details', {
+        characterName: verifyData.CharacterName,
+        characterId: verifyData.CharacterID ?? null,
+        error: error.message
+      });
+    }
 
     if (loginState?.mode === 'add-character' && loginState.accountId) {
       const account = getAccountById(db, loginState.accountId);
