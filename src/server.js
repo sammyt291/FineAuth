@@ -11,7 +11,8 @@ import {
   getAccountByToken,
   listCharactersForAccount,
   addCharacterToAccount,
-  getAccountById
+  getAccountById,
+  updateCharacterDetails
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
 import { PermissionsManager } from './permissions.js';
@@ -103,7 +104,15 @@ function createServer() {
         return;
       }
       const characters = listCharactersForAccount(db, account.id).map(
-        (character) => character.name
+        (character) => ({
+          name: character.name,
+          characterId: character.character_id ?? null,
+          corporationId: character.corporation_id ?? null,
+          corporationName: character.corporation_name ?? null,
+          allianceId: character.alliance_id ?? null,
+          allianceName: character.alliance_name ?? null,
+          updatedAt: character.updated_at ?? null
+        })
       );
       respond?.({
         account: {
@@ -160,6 +169,58 @@ function createServer() {
 
     socket.on('esi:status:request', (_payload, respond) => {
       respond?.(esiStatus);
+    });
+
+    socket.on('characters:refresh', async (payload, respond) => {
+      const token = payload?.token;
+      if (!token) {
+        respond?.({ error: 'Missing session token.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account) {
+        respond?.({ error: 'Invalid session token.' });
+        return;
+      }
+      const characters = listCharactersForAccount(db, account.id);
+      if (!characters.length) {
+        respond?.({ characters: [] });
+        return;
+      }
+      const task = queueUserEsiTask({
+        taskName: 'Refresh character details',
+        accountName: account.name,
+        type: 'refresh'
+      });
+      try {
+        for (const character of characters) {
+          const details = await fetchCharacterDetails({
+            name: character.name,
+            characterId: character.character_id,
+            cache: false
+          });
+          updateCharacterDetails(db, character.id, {
+            name: character.name,
+            ...details
+          });
+        }
+        const refreshed = listCharactersForAccount(db, account.id).map(
+          (character) => ({
+            name: character.name,
+            characterId: character.character_id ?? null,
+            corporationId: character.corporation_id ?? null,
+            corporationName: character.corporation_name ?? null,
+            allianceId: character.alliance_id ?? null,
+            allianceName: character.alliance_name ?? null,
+            updatedAt: character.updated_at ?? null
+          })
+        );
+        respond?.({ characters: refreshed });
+      } catch (error) {
+        respond?.({ error: error.message });
+      } finally {
+        completeEsiTask(task.id);
+      }
     });
 
     socket.on('module:settings:request', (payload, respond) => {
@@ -432,13 +493,23 @@ app.get('/callback', async (req, res) => {
           : 'ESI login'
     });
 
+    const characterDetails = await fetchCharacterDetails({
+      name: verifyData.CharacterName,
+      characterId: verifyData.CharacterID,
+      cache: true
+    });
+
     if (loginState?.mode === 'add-character' && loginState.accountId) {
       const account = getAccountById(db, loginState.accountId);
       if (!account) {
         res.status(400).send('Account not found for character add.');
         return;
       }
-      addCharacterToAccount(db, account.id, verifyData.CharacterName);
+      addCharacterToAccount(db, account.id, {
+        name: verifyData.CharacterName,
+        characterId: verifyData.CharacterID,
+        ...characterDetails
+      });
       res.send(`
         <!doctype html>
         <html>
@@ -464,7 +535,13 @@ app.get('/callback', async (req, res) => {
       name: verifyData.CharacterName,
       accessToken,
       refreshToken: tokenData.refresh_token,
-      characterNames: [verifyData.CharacterName],
+      characterNames: [
+        {
+          name: verifyData.CharacterName,
+          characterId: verifyData.CharacterID,
+          ...characterDetails
+        }
+      ],
       moduleData: {},
       moduleAccountModifiers: moduleManager.getAccountModifiers()
     });
@@ -500,7 +577,12 @@ app.use('/modules', (req, res, next) => {
     return;
   }
   const staticPath = path.join(moduleData.assetsPath);
-  express.static(staticPath)(req, res, next);
+  const originalUrl = req.url;
+  req.url = req.url.replace(`/${moduleName}`, '') || '/';
+  express.static(staticPath)(req, res, (error) => {
+    req.url = originalUrl;
+    next(error);
+  });
 });
 
 function cryptoRandom() {
@@ -528,6 +610,59 @@ async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
     });
   }
   return data;
+}
+
+async function fetchCharacterDetails({ name, characterId, cache = true }) {
+  let resolvedCharacterId = characterId;
+  if (!resolvedCharacterId && name) {
+    const search = await fetchEsiJson(
+      `https://esi.evetech.net/latest/search/?categories=character&search=${encodeURIComponent(
+        name
+      )}&strict=true&datasource=tranquility`,
+      { cache }
+    );
+    resolvedCharacterId = Array.isArray(search.character)
+      ? search.character[0]
+      : null;
+  }
+  if (!resolvedCharacterId) {
+    return {
+      characterId: null,
+      corporationId: null,
+      corporationName: null,
+      allianceId: null,
+      allianceName: null
+    };
+  }
+  const characterData = await fetchEsiJson(
+    `https://esi.evetech.net/latest/characters/${resolvedCharacterId}/?datasource=tranquility`,
+    { cache }
+  );
+  const corporationId = characterData?.corporation_id ?? null;
+  const allianceId = characterData?.alliance_id ?? null;
+  let corporationName = null;
+  let allianceName = null;
+  if (corporationId) {
+    const corporation = await fetchEsiJson(
+      `https://esi.evetech.net/latest/corporations/${corporationId}/?datasource=tranquility`,
+      { cache }
+    );
+    corporationName = corporation?.name ?? null;
+  }
+  if (allianceId) {
+    const alliance = await fetchEsiJson(
+      `https://esi.evetech.net/latest/alliances/${allianceId}/?datasource=tranquility`,
+      { cache }
+    );
+    allianceName = alliance?.name ?? null;
+  }
+  return {
+    characterId: resolvedCharacterId,
+    corporationId,
+    corporationName,
+    allianceId,
+    allianceName
+  };
 }
 
 function canAddCharacters(accountName) {

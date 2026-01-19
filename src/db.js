@@ -31,7 +31,21 @@ export function openDatabase(path) {
       FOREIGN KEY(account_id) REFERENCES accounts(id)
     );
   `);
+  ensureColumn(db, 'characters', 'character_id', 'INTEGER');
+  ensureColumn(db, 'characters', 'corporation_id', 'INTEGER');
+  ensureColumn(db, 'characters', 'corporation_name', 'TEXT');
+  ensureColumn(db, 'characters', 'alliance_id', 'INTEGER');
+  ensureColumn(db, 'characters', 'alliance_name', 'TEXT');
+  ensureColumn(db, 'characters', 'updated_at', 'TEXT');
   return db;
+}
+
+function ensureColumn(db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const exists = columns.some((column) => column.name === columnName);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
 }
 
 export function hashToken(token) {
@@ -75,10 +89,30 @@ export function saveAccount({
   const accountId = result.lastInsertRowid;
   if (Array.isArray(characterNames)) {
     const insertCharacter = db.prepare(
-      `INSERT INTO characters (account_id, name, created_at) VALUES (?, ?, ?)`
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     characterNames.forEach((characterName) => {
-      insertCharacter.run(accountId, characterName, createdAt);
+      const {
+        name: resolvedName,
+        characterId,
+        corporationId,
+        corporationName,
+        allianceId,
+        allianceName
+      } = normalizeCharacterDetails(characterName);
+      const timestamp = new Date().toISOString();
+      insertCharacter.run(
+        accountId,
+        resolvedName,
+        characterId,
+        corporationId,
+        corporationName,
+        allianceId,
+        allianceName,
+        createdAt,
+        timestamp
+      );
     });
   }
 
@@ -116,7 +150,15 @@ export function getAccountById(db, accountId) {
   return db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
 }
 
-export function addCharacterToAccount(db, accountId, characterName) {
+export function addCharacterToAccount(db, accountId, characterInput) {
+  const {
+    name: characterName,
+    characterId,
+    corporationId,
+    corporationName,
+    allianceId,
+    allianceName
+  } = normalizeCharacterDetails(characterInput);
   if (!accountId || !characterName) {
     return { added: false };
   }
@@ -126,13 +168,97 @@ export function addCharacterToAccount(db, accountId, characterName) {
     )
     .get(accountId, characterName);
   if (existing) {
+    if (
+      characterId ||
+      corporationId ||
+      corporationName ||
+      allianceId ||
+      allianceName
+    ) {
+      updateCharacterDetails(db, existing.id, {
+        name: characterName,
+        characterId,
+        corporationId,
+        corporationName,
+        allianceId,
+        allianceName
+      });
+    }
     return { added: false, existingId: existing.id };
   }
   const createdAt = new Date().toISOString();
   const result = db
-    .prepare('INSERT INTO characters (account_id, name, created_at) VALUES (?, ?, ?)')
-    .run(accountId, characterName, createdAt);
+    .prepare(
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      accountId,
+      characterName,
+      characterId,
+      corporationId,
+      corporationName,
+      allianceId,
+      allianceName,
+      createdAt,
+      createdAt
+    );
   return { added: true, characterId: result.lastInsertRowid };
+}
+
+export function updateCharacterDetails(db, characterRowId, details) {
+  if (!characterRowId) {
+    return;
+  }
+  const {
+    name,
+    characterId,
+    corporationId,
+    corporationName,
+    allianceId,
+    allianceName
+  } = normalizeCharacterDetails(details);
+  db.prepare(
+    `UPDATE characters
+     SET name = ?,
+         character_id = ?,
+         corporation_id = ?,
+         corporation_name = ?,
+         alliance_id = ?,
+         alliance_name = ?,
+         updated_at = ?
+     WHERE id = ?`
+  ).run(
+    name,
+    characterId,
+    corporationId,
+    corporationName,
+    allianceId,
+    allianceName,
+    new Date().toISOString(),
+    characterRowId
+  );
+}
+
+function normalizeCharacterDetails(characterInput) {
+  if (typeof characterInput === 'string') {
+    return {
+      name: characterInput,
+      characterId: null,
+      corporationId: null,
+      corporationName: null,
+      allianceId: null,
+      allianceName: null
+    };
+  }
+  return {
+    name: characterInput?.name ?? '',
+    characterId: characterInput?.characterId ?? null,
+    corporationId: characterInput?.corporationId ?? null,
+    corporationName: characterInput?.corporationName ?? null,
+    allianceId: characterInput?.allianceId ?? null,
+    allianceName: characterInput?.allianceName ?? null
+  };
 }
 
 export function deleteAccount(db, accountId) {
