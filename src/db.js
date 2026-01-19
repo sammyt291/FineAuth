@@ -11,6 +11,7 @@ export function openDatabase(path) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL,
       name TEXT NOT NULL,
+      refresh_token TEXT,
       access_token_hash TEXT NOT NULL,
       refresh_token_hash TEXT,
       created_at TEXT NOT NULL
@@ -37,6 +38,7 @@ export function openDatabase(path) {
   ensureColumn(db, 'characters', 'alliance_id', 'INTEGER');
   ensureColumn(db, 'characters', 'alliance_name', 'TEXT');
   ensureColumn(db, 'characters', 'updated_at', 'TEXT');
+  ensureColumn(db, 'accounts', 'refresh_token', 'TEXT');
   return db;
 }
 
@@ -75,12 +77,13 @@ export function saveAccount({
   }
 
   const insertAccount = db.prepare(
-    `INSERT INTO accounts (type, name, access_token_hash, refresh_token_hash, created_at)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO accounts (type, name, refresh_token, access_token_hash, refresh_token_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
   );
   const result = insertAccount.run(
     accountRecord.type,
     accountRecord.name,
+    refreshToken ?? null,
     accountRecord.accessTokenHash,
     accountRecord.refreshTokenHash,
     createdAt
@@ -183,14 +186,27 @@ export function updateAccountTokens(db, accountId, { accessToken, refreshToken }
   }
   db.prepare(
     `UPDATE accounts
-     SET access_token_hash = ?,
+     SET refresh_token = ?,
+         access_token_hash = ?,
          refresh_token_hash = ?
      WHERE id = ?`
   ).run(
+    refreshToken ?? null,
     hashToken(accessToken),
     refreshToken ? hashToken(refreshToken) : null,
     accountId
   );
+}
+
+export function getModuleAccountData(db, accountId, moduleName) {
+  if (!accountId || !moduleName) {
+    return null;
+  }
+  return db
+    .prepare(
+      'SELECT * FROM module_account_data WHERE account_id = ? AND module_name = ?'
+    )
+    .get(accountId, moduleName);
 }
 
 export function addCharacterToAccount(db, accountId, characterInput) {

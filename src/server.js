@@ -16,7 +16,9 @@ import {
   updateCharacterDetails,
   getAccountByName,
   getAccountByCharacterName,
-  updateAccountTokens
+  updateAccountTokens,
+  upsertModuleAccountData,
+  getModuleAccountData
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
 import { PermissionsManager } from './permissions.js';
@@ -40,6 +42,7 @@ const esiQueue = [];
 let esiTaskSequence = 1;
 const esiCache = new Map();
 const esiLoginStates = new Map();
+const accountSyncs = new Map();
 let esiStatus = {
   status: 'unknown',
   players: null,
@@ -83,10 +86,19 @@ function redactHeaders(headers) {
   return output;
 }
 
-async function fetchWithEsiLogging(url, options = {}) {
+async function fetchWithEsiLogging(url, options = {}, queueMetadata = null) {
   const method = options.method ?? 'GET';
   const requestHeaders = redactHeaders(headersToObject(options.headers ?? {}));
   logEvent('esi', 'Request', { url, method, headers: requestHeaders });
+  const queueTask = queueMetadata
+    ? queueUserEsiTask({
+        taskName:
+          queueMetadata.taskName ??
+          `ESI ${method} ${new URL(url).pathname}`,
+        accountName: queueMetadata.accountName ?? null,
+        type: queueMetadata.type ?? 'system'
+      })
+    : queueEsiTask(`ESI ${method} ${new URL(url).pathname}`);
   try {
     const response = await fetch(url, options);
     const responseHeaders = headersToObject(response.headers);
@@ -111,6 +123,10 @@ async function fetchWithEsiLogging(url, options = {}) {
       error: error.message
     });
     throw error;
+  } finally {
+    if (queueTask) {
+      completeEsiTask(queueTask.id);
+    }
   }
 }
 
@@ -172,7 +188,7 @@ function createServer() {
         return;
       }
       if (socket.data.accountDataQueuedFor !== account.name) {
-        queueAccountDataRequests(account.name);
+        queueAccountDataRequests(account);
         socket.data.accountDataQueuedFor = account.name;
       }
       const characters = listCharactersForAccount(db, account.id).map(
@@ -379,6 +395,29 @@ function createServer() {
       }));
       respond?.({ accounts });
     });
+
+    socket.on('admin:data:request', (payload, respond) => {
+      const token = payload?.token;
+      const accountId = Number(payload?.accountId);
+      if (!token || !accountId) {
+        respond?.({ error: 'Missing admin data request data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const targetAccount = getAccountById(db, accountId);
+      if (targetAccount) {
+        queueAccountDataRequests(targetAccount);
+      }
+      const dataRow = getModuleAccountData(db, accountId, 'admin');
+      respond?.({
+        accountId,
+        data: dataRow ? JSON.parse(dataRow.data_json) : null
+      });
+    });
   });
 
   return httpServer;
@@ -455,27 +494,21 @@ function queueUserEsiTask({ taskName, accountName, type }) {
   return task;
 }
 
-function queueAccountDataRequests(accountName) {
-  if (!accountName) {
+function queueAccountDataRequests(account) {
+  if (!account?.id || accountSyncs.has(account.id)) {
     return;
   }
-  const queueRunMs = (config.esi.queueRunSeconds ?? 12) * 1000;
-  const tasks = [
-    { taskName: 'Sync mail data', type: 'mail' },
-    { taskName: 'Sync skill data', type: 'skills' },
-    { taskName: 'Sync training queue', type: 'training-queue' },
-    { taskName: 'Sync wallet history', type: 'wallet' }
-  ];
-  tasks.forEach((task) => {
-    const queuedTask = queueUserEsiTask({
-      taskName: task.taskName,
-      accountName,
-      type: task.type
+  const syncPromise = syncAccountEsiData(account)
+    .catch((error) => {
+      logEvent('esi', 'Account sync failed', {
+        accountName: account.name,
+        error: error.message
+      });
+    })
+    .finally(() => {
+      accountSyncs.delete(account.id);
     });
-    setTimeout(() => {
-      completeEsiTask(queuedTask.id);
-    }, queueRunMs);
-  });
+  accountSyncs.set(account.id, syncPromise);
 }
 
 function updateEsiTask(taskId, updates) {
@@ -815,6 +848,179 @@ async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
     });
   }
   return data;
+}
+
+async function fetchEsiAccessToken(account) {
+  if (!account?.refresh_token || !config.esi.clientId || !config.esi.clientSecret) {
+    return null;
+  }
+  const credentials = Buffer.from(
+    `${config.esi.clientId}:${config.esi.clientSecret}`
+  ).toString('base64');
+  const response = await fetchWithEsiLogging(
+    'https://login.eveonline.com/v2/oauth/token',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Host: 'login.eveonline.com'
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: account.refresh_token
+      })
+    },
+    {
+      taskName: 'Refresh ESI access token',
+      accountName: account.name,
+      type: 'auth'
+    }
+  );
+  if (!response.ok) {
+    const errorText = await response.text();
+    logEvent('esi', 'Refresh token exchange failed', {
+      status: response.status,
+      response: errorText,
+      accountName: account.name
+    });
+    return null;
+  }
+  const tokenData = await response.json();
+  return tokenData.access_token ?? null;
+}
+
+async function fetchEsiAuthorizedJson(url, accessToken, queueMetadata) {
+  const response = await fetchWithEsiLogging(
+    url,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    },
+    queueMetadata
+  );
+  if (!response.ok) {
+    throw new Error(`ESI auth request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function syncAccountEsiData(account) {
+  const accessToken = await fetchEsiAccessToken(account);
+  if (!accessToken) {
+    logEvent('esi', 'Skipped sync (missing access token)', {
+      accountName: account.name
+    });
+    return;
+  }
+  const characters = listCharactersForAccount(db, account.id);
+  const payload = {
+    accountId: account.id,
+    accountName: account.name,
+    updatedAt: new Date().toISOString(),
+    characters: []
+  };
+
+  for (const character of characters) {
+    let characterId = character.character_id ?? null;
+    if (!characterId) {
+      try {
+        const details = await fetchCharacterDetails({
+          name: character.name,
+          characterId: null,
+          cache: true
+        });
+        characterId = details.characterId ?? null;
+        if (characterId) {
+          updateCharacterDetails(db, character.id, details);
+        }
+      } catch (error) {
+        logEvent('esi', 'Character ID lookup failed', {
+          accountName: account.name,
+          characterName: character.name,
+          error: error.message
+        });
+      }
+    }
+    if (!characterId) {
+      continue;
+    }
+
+    const mailPromise = fetchEsiAuthorizedJson(
+      `https://esi.evetech.net/latest/characters/${characterId}/mail/?datasource=tranquility`,
+      accessToken,
+      {
+        taskName: `Sync mail: ${character.name}`,
+        accountName: account.name,
+        type: 'mail'
+      }
+    );
+    const skillsPromise = fetchEsiAuthorizedJson(
+      `https://esi.evetech.net/latest/characters/${characterId}/skills/?datasource=tranquility`,
+      accessToken,
+      {
+        taskName: `Sync skills: ${character.name}`,
+        accountName: account.name,
+        type: 'skills'
+      }
+    );
+    const queuePromise = fetchEsiAuthorizedJson(
+      `https://esi.evetech.net/latest/characters/${characterId}/skillqueue/?datasource=tranquility`,
+      accessToken,
+      {
+        taskName: `Sync training queue: ${character.name}`,
+        accountName: account.name,
+        type: 'training-queue'
+      }
+    );
+    const walletPromise = fetchEsiAuthorizedJson(
+      `https://esi.evetech.net/latest/characters/${characterId}/wallet/?datasource=tranquility`,
+      accessToken,
+      {
+        taskName: `Sync wallet: ${character.name}`,
+        accountName: account.name,
+        type: 'wallet'
+      }
+    );
+
+    const [mailResult, skillsResult, queueResult, walletResult] =
+      await Promise.allSettled([
+        mailPromise,
+        skillsPromise,
+        queuePromise,
+        walletPromise
+      ]);
+
+    payload.characters.push({
+      id: character.id,
+      name: character.name,
+      characterId,
+      mail: mailResult.status === 'fulfilled' ? mailResult.value : [],
+      skills: skillsResult.status === 'fulfilled' ? skillsResult.value : null,
+      trainingQueue:
+        queueResult.status === 'fulfilled' ? queueResult.value : [],
+      wallet: walletResult.status === 'fulfilled' ? walletResult.value : null,
+      errors: {
+        mail:
+          mailResult.status === 'rejected' ? mailResult.reason?.message : null,
+        skills:
+          skillsResult.status === 'rejected'
+            ? skillsResult.reason?.message
+            : null,
+        trainingQueue:
+          queueResult.status === 'rejected'
+            ? queueResult.reason?.message
+            : null,
+        wallet:
+          walletResult.status === 'rejected'
+            ? walletResult.reason?.message
+            : null
+      }
+    });
+  }
+
+  upsertModuleAccountData(db, account.id, 'admin', payload);
 }
 
 async function fetchCharacterDetails({ name, characterId, cache = true }) {
