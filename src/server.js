@@ -708,6 +708,7 @@ app.get('/callback', async (req, res) => {
       addCharacterToAccount(db, account.id, {
         name: verifyData.CharacterName,
         characterId: verifyData.CharacterID,
+        refreshToken: tokenData.refresh_token,
         ...characterDetails
       });
       logEvent('account', 'Character added to account', {
@@ -747,6 +748,7 @@ app.get('/callback', async (req, res) => {
       addCharacterToAccount(db, existingAccount.id, {
         name: verifyData.CharacterName,
         characterId: verifyData.CharacterID,
+        refreshToken: tokenData.refresh_token,
         ...characterDetails
       });
       logEvent('account', 'Account associated with character', {
@@ -766,6 +768,7 @@ app.get('/callback', async (req, res) => {
           {
             name: verifyData.CharacterName,
             characterId: verifyData.CharacterID,
+            refreshToken: tokenData.refresh_token,
             ...characterDetails
           }
         ],
@@ -890,6 +893,42 @@ async function fetchEsiAccessToken(account) {
   return tokenData.access_token ?? null;
 }
 
+async function fetchEsiAccessTokenForRefreshToken(refreshToken, queueMetadata) {
+  if (!refreshToken || !config.esi.clientId || !config.esi.clientSecret) {
+    return null;
+  }
+  const credentials = Buffer.from(
+    `${config.esi.clientId}:${config.esi.clientSecret}`
+  ).toString('base64');
+  const response = await fetchWithEsiLogging(
+    'https://login.eveonline.com/v2/oauth/token',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Host: 'login.eveonline.com'
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+      })
+    },
+    queueMetadata
+  );
+  if (!response.ok) {
+    const errorText = await response.text();
+    logEvent('esi', 'Refresh token exchange failed', {
+      status: response.status,
+      response: errorText,
+      accountName: queueMetadata?.accountName ?? null
+    });
+    return null;
+  }
+  const tokenData = await response.json();
+  return tokenData.access_token ?? null;
+}
+
 async function fetchEsiAuthorizedJson(url, accessToken, queueMetadata) {
   const response = await fetchWithEsiLogging(
     url,
@@ -975,14 +1014,17 @@ async function fetchEsiNamesInBatches(ids, queueMetadata, batchSize = 1000) {
 }
 
 async function syncAccountEsiData(account) {
-  const accessToken = await fetchEsiAccessToken(account);
-  if (!accessToken) {
+  const characters = listCharactersForAccount(db, account.id);
+  const accountAccessToken = await fetchEsiAccessToken(account);
+  const hasCharacterTokens = characters.some(
+    (character) => !!character.refresh_token
+  );
+  if (!accountAccessToken && !hasCharacterTokens) {
     logEvent('esi', 'Skipped sync (missing access token)', {
       accountName: account.name
     });
     return;
   }
-  const characters = listCharactersForAccount(db, account.id);
   const adminSettings = getAdminModuleSettings();
   const mailMaxDataPoints = parseNumberSetting(
     adminSettings.mailMaxDataPoints,
@@ -1045,9 +1087,27 @@ async function syncAccountEsiData(account) {
       continue;
     }
 
+    const characterAccessToken = character.refresh_token
+      ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
+          taskName: `Refresh ESI access token: ${character.name}`,
+          accountName: account.name,
+          type: 'auth'
+        })
+      : character.name === account.name
+        ? accountAccessToken
+        : null;
+
+    if (!characterAccessToken) {
+      logEvent('esi', 'Skipped sync (missing character access token)', {
+        accountName: account.name,
+        characterName: character.name
+      });
+      continue;
+    }
+
     const mailPromise = fetchEsiAuthorizedJson(
       `https://esi.evetech.net/latest/characters/${characterId}/mail/?datasource=tranquility`,
-      accessToken,
+      characterAccessToken,
       {
         taskName: `Sync mail: ${character.name}`,
         accountName: account.name,
@@ -1056,7 +1116,7 @@ async function syncAccountEsiData(account) {
     );
     const skillsPromise = fetchEsiAuthorizedJson(
       `https://esi.evetech.net/latest/characters/${characterId}/skills/?datasource=tranquility`,
-      accessToken,
+      characterAccessToken,
       {
         taskName: `Sync skills: ${character.name}`,
         accountName: account.name,
@@ -1065,7 +1125,7 @@ async function syncAccountEsiData(account) {
     );
     const queuePromise = fetchEsiAuthorizedJson(
       `https://esi.evetech.net/latest/characters/${characterId}/skillqueue/?datasource=tranquility`,
-      accessToken,
+      characterAccessToken,
       {
         taskName: `Sync training queue: ${character.name}`,
         accountName: account.name,
@@ -1074,7 +1134,7 @@ async function syncAccountEsiData(account) {
     );
     const walletPromise = fetchEsiAuthorizedJson(
       `https://esi.evetech.net/latest/characters/${characterId}/wallet/?datasource=tranquility`,
-      accessToken,
+      characterAccessToken,
       {
         taskName: `Sync wallet: ${character.name}`,
         accountName: account.name,
@@ -1108,7 +1168,7 @@ async function syncAccountEsiData(account) {
       mailItems.map((mail) =>
         fetchEsiAuthorizedJson(
           `https://esi.evetech.net/latest/characters/${characterId}/mail/${mail.mail_id}/?datasource=tranquility`,
-          accessToken,
+          characterAccessToken,
           {
             taskName: `Sync mail body: ${character.name}`,
             accountName: account.name,
