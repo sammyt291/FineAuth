@@ -38,6 +38,8 @@ export function openDatabase(path) {
   ensureColumn(db, 'characters', 'alliance_id', 'INTEGER');
   ensureColumn(db, 'characters', 'alliance_name', 'TEXT');
   ensureColumn(db, 'characters', 'updated_at', 'TEXT');
+  ensureColumn(db, 'characters', 'refresh_token', 'TEXT');
+  ensureColumn(db, 'characters', 'refresh_token_hash', 'TEXT');
   ensureColumn(db, 'accounts', 'refresh_token', 'TEXT');
   return db;
 }
@@ -92,8 +94,8 @@ export function saveAccount({
   const accountId = result.lastInsertRowid;
   if (Array.isArray(characterNames)) {
     const insertCharacter = db.prepare(
-      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     characterNames.forEach((characterName) => {
       const {
@@ -102,9 +104,11 @@ export function saveAccount({
         corporationId,
         corporationName,
         allianceId,
-        allianceName
+        allianceName,
+        refreshToken
       } = normalizeCharacterDetails(characterName);
       const timestamp = new Date().toISOString();
+      const refreshTokenHash = refreshToken ? hashToken(refreshToken) : null;
       insertCharacter.run(
         accountId,
         resolvedName,
@@ -113,6 +117,8 @@ export function saveAccount({
         corporationName,
         allianceId,
         allianceName,
+        refreshToken ?? null,
+        refreshTokenHash,
         createdAt,
         timestamp
       );
@@ -216,7 +222,8 @@ export function addCharacterToAccount(db, accountId, characterInput) {
     corporationId,
     corporationName,
     allianceId,
-    allianceName
+    allianceName,
+    refreshToken
   } = normalizeCharacterDetails(characterInput);
   if (!accountId || !characterName) {
     return { added: false };
@@ -243,13 +250,17 @@ export function addCharacterToAccount(db, accountId, characterInput) {
         allianceName
       });
     }
+    if (refreshToken) {
+      updateCharacterTokens(db, existing.id, refreshToken);
+    }
     return { added: false, existingId: existing.id };
   }
   const createdAt = new Date().toISOString();
+  const refreshTokenHash = refreshToken ? hashToken(refreshToken) : null;
   const result = db
     .prepare(
-      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       accountId,
@@ -259,10 +270,30 @@ export function addCharacterToAccount(db, accountId, characterInput) {
       corporationName,
       allianceId,
       allianceName,
+      refreshToken ?? null,
+      refreshTokenHash,
       createdAt,
       createdAt
     );
   return { added: true, characterId: result.lastInsertRowid };
+}
+
+export function updateCharacterTokens(db, characterRowId, refreshToken) {
+  if (!characterRowId || !refreshToken) {
+    return;
+  }
+  db.prepare(
+    `UPDATE characters
+     SET refresh_token = ?,
+         refresh_token_hash = ?,
+         updated_at = ?
+     WHERE id = ?`
+  ).run(
+    refreshToken,
+    hashToken(refreshToken),
+    new Date().toISOString(),
+    characterRowId
+  );
 }
 
 export function updateCharacterDetails(db, characterRowId, details) {
@@ -307,7 +338,8 @@ function normalizeCharacterDetails(characterInput) {
       corporationId: null,
       corporationName: null,
       allianceId: null,
-      allianceName: null
+      allianceName: null,
+      refreshToken: null
     };
   }
   return {
@@ -316,7 +348,8 @@ function normalizeCharacterDetails(characterInput) {
     corporationId: characterInput?.corporationId ?? null,
     corporationName: characterInput?.corporationName ?? null,
     allianceId: characterInput?.allianceId ?? null,
-    allianceName: characterInput?.allianceName ?? null
+    allianceName: characterInput?.allianceName ?? null,
+    refreshToken: characterInput?.refreshToken ?? null
   };
 }
 
