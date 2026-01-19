@@ -12,7 +12,10 @@ import {
   listCharactersForAccount,
   addCharacterToAccount,
   getAccountById,
-  updateCharacterDetails
+  updateCharacterDetails,
+  getAccountByName,
+  getAccountByCharacterName,
+  updateAccountTokens
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
 import { PermissionsManager } from './permissions.js';
@@ -529,22 +532,38 @@ app.get('/callback', async (req, res) => {
     }
 
     const accessToken = cryptoRandom();
-    saveAccount({
-      db,
-      type: 'esi',
-      name: verifyData.CharacterName,
-      accessToken,
-      refreshToken: tokenData.refresh_token,
-      characterNames: [
-        {
-          name: verifyData.CharacterName,
-          characterId: verifyData.CharacterID,
-          ...characterDetails
-        }
-      ],
-      moduleData: {},
-      moduleAccountModifiers: moduleManager.getAccountModifiers()
-    });
+    const existingAccount =
+      getAccountByCharacterName(db, verifyData.CharacterName) ??
+      getAccountByName(db, verifyData.CharacterName);
+
+    if (existingAccount) {
+      updateAccountTokens(db, existingAccount.id, {
+        accessToken,
+        refreshToken: tokenData.refresh_token
+      });
+      addCharacterToAccount(db, existingAccount.id, {
+        name: verifyData.CharacterName,
+        characterId: verifyData.CharacterID,
+        ...characterDetails
+      });
+    } else {
+      saveAccount({
+        db,
+        type: 'esi',
+        name: verifyData.CharacterName,
+        accessToken,
+        refreshToken: tokenData.refresh_token,
+        characterNames: [
+          {
+            name: verifyData.CharacterName,
+            characterId: verifyData.CharacterID,
+            ...characterDetails
+          }
+        ],
+        moduleData: {},
+        moduleAccountModifiers: moduleManager.getAccountModifiers()
+      });
+    }
 
     res.send(`
       <!doctype html>
