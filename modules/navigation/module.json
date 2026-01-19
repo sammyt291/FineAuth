@@ -3,6 +3,18 @@
   "displayName": "Navigation Menus",
   "description": "Top navigation and dropdown menus",
   "mainPage": "navigation",
+  "adminSettings": {
+    "title": "Navigation Order",
+    "fields": [
+      {
+        "id": "navOrder",
+        "label": "Navigation order (module names, comma-separated)",
+        "type": "text",
+        "default": "",
+        "help": "Enter module names in the order you want them to appear. Home is always first."
+      }
+    ]
+  },
   "permissions": [
     {
       "name": "navigation.view",

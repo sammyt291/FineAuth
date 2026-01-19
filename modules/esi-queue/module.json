@@ -1,0 +1,11 @@
+{
+  "name": "esi-queue",
+  "displayName": "ESI Queue",
+  "description": "Track in-flight ESI requests.",
+  "mainPage": "index.html",
+  "homePanel": {
+    "title": "ESI Queue",
+    "description": "Your queued ESI requests and ETAs.",
+    "position": 9999
+  }
+}

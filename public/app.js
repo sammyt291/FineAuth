@@ -20,7 +20,6 @@ const state = {
 
 let socket;
 let queueTickerId;
-let ellipsisTick = 0;
 
 const helpers = {
   createGridContainer(items) {
@@ -105,6 +104,26 @@ function getHomeLayout() {
   return homeModule?.settings?.panelLayout ?? 'vertical';
 }
 
+function getNavigationOrder() {
+  const navModule = helpers.getModule('navigation');
+  const orderValue = navModule?.settings?.navOrder ?? '';
+  if (!orderValue) {
+    return [];
+  }
+  return orderValue
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function isHomeModule(moduleData) {
+  const name = moduleData?.name ?? '';
+  const displayName = moduleData?.displayName ?? '';
+  return (
+    name.toLowerCase() === 'home' || displayName.toLowerCase() === 'home'
+  );
+}
+
 function normalizeCharacters(characters) {
   if (!Array.isArray(characters)) {
     return [];
@@ -153,7 +172,6 @@ function startQueueTicker() {
     if (!state.account) {
       return;
     }
-    ellipsisTick = (ellipsisTick + 1) % 4;
     const activeHash = window.location.hash;
     if (activeHash === '#/module/home') {
       renderHome();
@@ -193,6 +211,29 @@ function renderNav() {
       return false;
     }
     return true;
+  });
+  const navigationOrder = getNavigationOrder().map((entry) => entry.toLowerCase());
+  moduleItems.sort((a, b) => {
+    const aIsHome = isHomeModule(a);
+    const bIsHome = isHomeModule(b);
+    if (aIsHome && !bIsHome) {
+      return -1;
+    }
+    if (bIsHome && !aIsHome) {
+      return 1;
+    }
+    const aIndex = navigationOrder.indexOf(a.name.toLowerCase());
+    const bIndex = navigationOrder.indexOf(b.name.toLowerCase());
+    if (aIndex === -1 && bIndex === -1) {
+      return a.displayName.localeCompare(b.displayName);
+    }
+    if (aIndex === -1) {
+      return 1;
+    }
+    if (bIndex === -1) {
+      return -1;
+    }
+    return aIndex - bIndex;
   });
   moduleItems.forEach((module) => {
     const item = document.createElement('li');
@@ -249,6 +290,19 @@ function renderNav() {
   logoutButton.textContent = 'Log out';
   logoutButton.addEventListener('click', handleLogout);
   actions.appendChild(statusWrap);
+  if (state.account?.isAdmin) {
+    const navModule = helpers.getModule('navigation');
+    if (navModule?.adminSettings) {
+      const settingsButton = document.createElement('button');
+      settingsButton.className = 'button nav-button nav-settings-button';
+      settingsButton.type = 'button';
+      settingsButton.textContent = 'Nav settings';
+      settingsButton.addEventListener('click', () =>
+        openModuleSettings(navModule)
+      );
+      actions.appendChild(settingsButton);
+    }
+  }
   actions.appendChild(logoutButton);
 
   container.appendChild(list);
@@ -321,6 +375,9 @@ function createHomePanel(moduleData) {
   if (moduleData.name === 'characters') {
     return createCharactersPanel(moduleData);
   }
+  if (moduleData.name === 'esi-queue') {
+    return createEsiQueuePanel(getUserEsiTasks(), moduleData);
+  }
   const { card } = createPanelCard({
     title: moduleData.homePanel?.title ?? moduleData.displayName,
     subtitle: moduleData.homePanel?.description ?? moduleData.description
@@ -340,7 +397,10 @@ function createHomePanel(moduleData) {
   return card;
 }
 
-function createCharacterList(characters, { compact = false } = {}) {
+function createCharacterList(
+  characters,
+  { compact = false, mainName = state.account?.name ?? '' } = {}
+) {
   const list = document.createElement('ul');
   list.className = `panel-list character-list${compact ? ' compact' : ''}`;
   const normalized = normalizeCharacters(characters);
@@ -348,6 +408,13 @@ function createCharacterList(characters, { compact = false } = {}) {
     normalized.forEach((character) => {
       const item = document.createElement('li');
       item.className = 'character-row';
+      const isMain =
+        mainName &&
+        character.name &&
+        character.name.toLowerCase() === mainName.toLowerCase();
+      if (isMain) {
+        item.classList.add('is-main');
+      }
 
       const avatar = document.createElement('div');
       avatar.className = 'character-avatar';
@@ -363,10 +430,19 @@ function createCharacterList(characters, { compact = false } = {}) {
 
       const info = document.createElement('div');
       info.className = 'character-info';
+      const nameRow = document.createElement('div');
+      nameRow.className = 'character-name-row';
       const name = document.createElement('div');
       name.className = 'character-name';
       name.textContent = character.name;
-      info.appendChild(name);
+      nameRow.appendChild(name);
+      if (isMain) {
+        const badge = document.createElement('span');
+        badge.className = 'character-badge';
+        badge.textContent = 'Main';
+        nameRow.appendChild(badge);
+      }
+      info.appendChild(nameRow);
 
       const meta = document.createElement('div');
       meta.className = 'character-meta';
@@ -422,41 +498,38 @@ function createCharactersPanel(moduleData) {
   manageButton.addEventListener('click', () => {
     window.location.hash = '#/module/characters';
   });
-  const addButton = document.createElement('button');
-  addButton.className = 'button';
-  addButton.type = 'button';
-  addButton.textContent = 'Add character';
-  addButton.addEventListener('click', handleAddCharacter);
   actionRow.appendChild(manageButton);
-  actionRow.appendChild(addButton);
   card.appendChild(actionRow);
 
   return card;
 }
 
-function createEsiQueuePanel(tasks) {
+function createEsiQueuePanel(tasks, moduleData) {
   const { card } = createPanelCard({
-    title: 'Your ESI Requests',
-    subtitle: 'Only your in-flight ESI requests are shown.'
+    title: moduleData?.homePanel?.title ?? 'Your ESI Queue',
+    subtitle:
+      moduleData?.homePanel?.description ??
+      'Only your in-flight ESI requests are shown.'
   });
   const list = document.createElement('ul');
   list.className = 'panel-list';
   const queueRunSeconds = state.esiQueueMeta.queueRunSeconds ?? 12;
+  if (!tasks.length) {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = 'No active ESI requests in your queue.';
+    list.appendChild(empty);
+  }
   tasks.forEach((task) => {
     const item = document.createElement('li');
     const position = getEsiQueuePosition(task.id);
     const queuedAt = new Date(task.queuedAt).getTime();
     const elapsedSeconds = (Date.now() - queuedAt) / 1000;
     const etaSeconds = queueRunSeconds * (position ?? 1) - elapsedSeconds;
-    const ellipsis = '.'.repeat(ellipsisTick);
     item.innerHTML = `
       <div class="queue-row">
-        <span class="queue-name">${task.taskName}${ellipsis}</span>
-        <span class="queue-meta">#${position ?? '—'}</span>
-      </div>
-      <div class="queue-row">
+        <span class="queue-name">${task.taskName} [${position ?? '—'}]</span>
         <span class="queue-meta">ETA ${helpers.formatDuration(etaSeconds)}</span>
-        <span class="queue-meta">[${task.id}]</span>
       </div>
     `;
     list.appendChild(item);
@@ -478,11 +551,6 @@ function renderHome() {
   panelModules.forEach((module) => {
     panels.push(createHomePanel(module));
   });
-
-  const userTasks = getUserEsiTasks();
-  if (userTasks.length) {
-    panels.push(createEsiQueuePanel(userTasks));
-  }
 
   const homeModule = helpers.getModule('home');
   const settingsButton = createModuleSettingsButton(homeModule);

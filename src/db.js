@@ -150,6 +150,49 @@ export function getAccountById(db, accountId) {
   return db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
 }
 
+export function getAccountByName(db, accountName) {
+  if (!accountName) {
+    return null;
+  }
+  return db
+    .prepare(
+      'SELECT * FROM accounts WHERE name = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT 1'
+    )
+    .get(accountName);
+}
+
+export function getAccountByCharacterName(db, characterName) {
+  if (!characterName) {
+    return null;
+  }
+  return db
+    .prepare(
+      `SELECT accounts.*
+       FROM accounts
+       JOIN characters ON characters.account_id = accounts.id
+       WHERE characters.name = ? COLLATE NOCASE
+       ORDER BY accounts.created_at DESC
+       LIMIT 1`
+    )
+    .get(characterName);
+}
+
+export function updateAccountTokens(db, accountId, { accessToken, refreshToken }) {
+  if (!accountId || !accessToken) {
+    return;
+  }
+  db.prepare(
+    `UPDATE accounts
+     SET access_token_hash = ?,
+         refresh_token_hash = ?
+     WHERE id = ?`
+  ).run(
+    hashToken(accessToken),
+    refreshToken ? hashToken(refreshToken) : null,
+    accountId
+  );
+}
+
 export function addCharacterToAccount(db, accountId, characterInput) {
   const {
     name: characterName,
