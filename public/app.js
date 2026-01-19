@@ -1396,6 +1396,10 @@ function handleRefreshCharacters() {
 }
 
 function handleLogout() {
+  const token = localStorage.getItem('fineauth_token');
+  if (socket && token) {
+    socket.emit('session:logout', { token });
+  }
   localStorage.removeItem('fineauth_token');
   state.account = null;
   state.loginError = null;
