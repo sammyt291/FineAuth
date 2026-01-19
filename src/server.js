@@ -418,6 +418,203 @@ function createServer() {
         data: dataRow ? JSON.parse(dataRow.data_json) : null
       });
     });
+
+    socket.on('admin:mail:labels:request', async (payload, respond) => {
+      const token = payload?.token;
+      const accountId = Number(payload?.accountId);
+      const characterId = Number(payload?.characterId);
+      if (
+        !token ||
+        Number.isNaN(accountId) ||
+        Number.isNaN(characterId)
+      ) {
+        respond?.({ error: 'Missing mail label request data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const targetAccount = getAccountById(db, accountId);
+      if (!targetAccount) {
+        respond?.({ error: 'Account not found.' });
+        return;
+      }
+      const characters = listCharactersForAccount(db, accountId);
+      const character = characters.find(
+        (entry) => Number(entry.character_id) === characterId
+      );
+      if (!character) {
+        respond?.({ error: 'Character not found.' });
+        return;
+      }
+      try {
+        const accessToken = character.refresh_token
+          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
+              taskName: `Refresh ESI access token: ${character.name}`,
+              accountName: targetAccount.name,
+              type: 'auth'
+            })
+          : character.name === targetAccount.name
+            ? await fetchEsiAccessToken(targetAccount)
+            : null;
+        if (!accessToken) {
+          respond?.({ error: 'Missing ESI access token for character.' });
+          return;
+        }
+        const url = `https://esi.evetech.net/latest/characters/${characterId}/mail/labels/?datasource=tranquility`;
+        const data = await fetchEsiAuthorizedJson(url, accessToken, {
+          taskName: `Admin mail labels: ${character.name}`,
+          accountName: targetAccount.name,
+          type: 'mail'
+        });
+        respond?.({ labels: data?.labels ?? [] });
+      } catch (error) {
+        respond?.({ error: error.message });
+      }
+    });
+
+    socket.on('admin:mail:list:request', async (payload, respond) => {
+      const token = payload?.token;
+      const accountId = Number(payload?.accountId);
+      const characterId = Number(payload?.characterId);
+      const labelId = Number(payload?.labelId);
+      const fetchAll = Boolean(payload?.fetchAll);
+      if (
+        !token ||
+        Number.isNaN(accountId) ||
+        Number.isNaN(characterId) ||
+        Number.isNaN(labelId)
+      ) {
+        respond?.({ error: 'Missing mail list request data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const targetAccount = getAccountById(db, accountId);
+      if (!targetAccount) {
+        respond?.({ error: 'Account not found.' });
+        return;
+      }
+      const characters = listCharactersForAccount(db, accountId);
+      const character = characters.find(
+        (entry) => Number(entry.character_id) === characterId
+      );
+      if (!character) {
+        respond?.({ error: 'Character not found.' });
+        return;
+      }
+      try {
+        const accessToken = character.refresh_token
+          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
+              taskName: `Refresh ESI access token: ${character.name}`,
+              accountName: targetAccount.name,
+              type: 'auth'
+            })
+          : character.name === targetAccount.name
+            ? await fetchEsiAccessToken(targetAccount)
+            : null;
+        if (!accessToken) {
+          respond?.({ error: 'Missing ESI access token for character.' });
+          return;
+        }
+        const mailItems = [];
+        let lastMailId = null;
+        const maxPages = fetchAll ? 50 : 1;
+        for (let page = 0; page < maxPages; page += 1) {
+          const url = new URL(
+            `https://esi.evetech.net/latest/characters/${characterId}/mail/`
+          );
+          url.searchParams.set('datasource', 'tranquility');
+          url.searchParams.set('label_id', String(labelId));
+          if (lastMailId) {
+            url.searchParams.set('last_mail_id', String(lastMailId));
+          }
+          const data = await fetchEsiAuthorizedJson(url.toString(), accessToken, {
+            taskName: `Admin mail headers: ${character.name}`,
+            accountName: targetAccount.name,
+            type: 'mail'
+          });
+          if (!Array.isArray(data) || !data.length) {
+            break;
+          }
+          mailItems.push(...data);
+          const nextMailId = data[data.length - 1]?.mail_id ?? null;
+          if (!nextMailId || nextMailId === lastMailId) {
+            break;
+          }
+          lastMailId = nextMailId;
+          if (!fetchAll) {
+            break;
+          }
+        }
+        respond?.({ mail: mailItems });
+      } catch (error) {
+        respond?.({ error: error.message });
+      }
+    });
+
+    socket.on('admin:mail:detail:request', async (payload, respond) => {
+      const token = payload?.token;
+      const accountId = Number(payload?.accountId);
+      const characterId = Number(payload?.characterId);
+      const mailId = Number(payload?.mailId);
+      if (
+        !token ||
+        Number.isNaN(accountId) ||
+        Number.isNaN(characterId) ||
+        Number.isNaN(mailId)
+      ) {
+        respond?.({ error: 'Missing mail detail request data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const targetAccount = getAccountById(db, accountId);
+      if (!targetAccount) {
+        respond?.({ error: 'Account not found.' });
+        return;
+      }
+      const characters = listCharactersForAccount(db, accountId);
+      const character = characters.find(
+        (entry) => Number(entry.character_id) === characterId
+      );
+      if (!character) {
+        respond?.({ error: 'Character not found.' });
+        return;
+      }
+      try {
+        const accessToken = character.refresh_token
+          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
+              taskName: `Refresh ESI access token: ${character.name}`,
+              accountName: targetAccount.name,
+              type: 'auth'
+            })
+          : character.name === targetAccount.name
+            ? await fetchEsiAccessToken(targetAccount)
+            : null;
+        if (!accessToken) {
+          respond?.({ error: 'Missing ESI access token for character.' });
+          return;
+        }
+        const url = `https://esi.evetech.net/latest/characters/${characterId}/mail/${mailId}/?datasource=tranquility`;
+        const detail = await fetchEsiAuthorizedJson(url, accessToken, {
+          taskName: `Admin mail detail: ${character.name}`,
+          accountName: targetAccount.name,
+          type: 'mail'
+        });
+        respond?.({ detail });
+      } catch (error) {
+        respond?.({ error: error.message });
+      }
+    });
   });
 
   return httpServer;

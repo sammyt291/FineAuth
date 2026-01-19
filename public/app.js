@@ -20,8 +20,8 @@ const state = {
     accounts: [],
     selectedAccountId: null,
     settings: null,
-    expandedFeatures: new Set(['mail']),
-    expandedSettingGroups: new Set(['mail']),
+    expandedFeatures: new Set(),
+    expandedSettingGroups: new Set(),
     settingsOpen: false,
     loadingAccounts: false,
     loadingSettings: false,
@@ -29,10 +29,19 @@ const state = {
     data: null,
     dataError: null,
     lastDataRequestAt: {},
-    mailSearchTitle: '',
-    mailSearchContent: '',
     mailPage: 1,
-    mailSelectedId: null
+    mailSelectedId: null,
+    mail: {
+      labelsByCharacter: {},
+      labelsLoading: new Set(),
+      labelsError: {},
+      selectedLabelByCharacter: {},
+      mailHeadersByLabel: {},
+      mailHeadersLoading: new Set(),
+      mailHeadersError: {},
+      mailDetailCache: {},
+      mailDetailLoading: new Set()
+    }
   }
 };
 
@@ -856,6 +865,127 @@ function requestAdminData({ type = 'auto', force = false } = {}) {
   );
 }
 
+function resetAdminMailState() {
+  state.admin.mailPage = 1;
+  state.admin.mailSelectedId = null;
+  state.admin.mail = {
+    labelsByCharacter: {},
+    labelsLoading: new Set(),
+    labelsError: {},
+    selectedLabelByCharacter: {},
+    mailHeadersByLabel: {},
+    mailHeadersLoading: new Set(),
+    mailHeadersError: {},
+    mailDetailCache: {},
+    mailDetailLoading: new Set()
+  };
+}
+
+function requestAdminMailLabels({ characterId } = {}) {
+  if (
+    !socket ||
+    !state.account?.isAdmin ||
+    !state.admin.selectedAccountId ||
+    characterId == null
+  ) {
+    return;
+  }
+  if (state.admin.mail.labelsLoading.has(characterId)) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.mail.labelsLoading.add(characterId);
+  socket.emit(
+    'admin:mail:labels:request',
+    { token, accountId: state.admin.selectedAccountId, characterId },
+    (response) => {
+      state.admin.mail.labelsLoading.delete(characterId);
+      if (response?.error) {
+        state.admin.mail.labelsError[characterId] = response.error;
+      } else {
+        const labels = response?.labels ?? [];
+        state.admin.mail.labelsByCharacter[characterId] = labels;
+        state.admin.mail.labelsError[characterId] = null;
+        if (
+          labels.length &&
+          !state.admin.mail.selectedLabelByCharacter[characterId]
+        ) {
+          state.admin.mail.selectedLabelByCharacter[characterId] =
+            labels[0].label_id ?? labels[0].id ?? null;
+        }
+      }
+      renderAdminModule();
+    }
+  );
+}
+
+function requestAdminMailHeaders({ characterId, labelId, fetchAll = false } = {}) {
+  if (
+    !socket ||
+    !state.account?.isAdmin ||
+    !state.admin.selectedAccountId ||
+    characterId == null ||
+    labelId == null
+  ) {
+    return;
+  }
+  const key = `${characterId}:${labelId}`;
+  if (state.admin.mail.mailHeadersLoading.has(key)) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.mail.mailHeadersLoading.add(key);
+  socket.emit(
+    'admin:mail:list:request',
+    {
+      token,
+      accountId: state.admin.selectedAccountId,
+      characterId,
+      labelId,
+      fetchAll
+    },
+    (response) => {
+      state.admin.mail.mailHeadersLoading.delete(key);
+      if (response?.error) {
+        state.admin.mail.mailHeadersError[key] = response.error;
+      } else {
+        state.admin.mail.mailHeadersByLabel[key] = response?.mail ?? [];
+        state.admin.mail.mailHeadersError[key] = null;
+      }
+      renderAdminModule();
+    }
+  );
+}
+
+function requestAdminMailDetail({ characterId, mailId } = {}) {
+  if (
+    !socket ||
+    !state.account?.isAdmin ||
+    !state.admin.selectedAccountId ||
+    characterId == null ||
+    mailId == null
+  ) {
+    return;
+  }
+  const key = `${characterId}:${mailId}`;
+  if (state.admin.mail.mailDetailLoading.has(key)) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.mail.mailDetailLoading.add(key);
+  socket.emit(
+    'admin:mail:detail:request',
+    { token, accountId: state.admin.selectedAccountId, characterId, mailId },
+    (response) => {
+      state.admin.mail.mailDetailLoading.delete(key);
+      if (!response?.error) {
+        state.admin.mail.mailDetailCache[key] = response?.detail ?? null;
+      }
+      renderAdminModule();
+    }
+  );
+}
+
 function ensureAdminData() {
   if (!state.admin.accounts.length && !state.admin.loadingAccounts) {
     requestAdminAccounts();
@@ -937,36 +1067,16 @@ function formatIsk(value) {
   return value.toLocaleString();
 }
 
-function getAdminMailItems() {
-  const items = [];
-  getAdminCharacters().forEach((character) => {
-    (character.mail ?? []).forEach((mail) => {
-      const mailId = mail.mail_id ?? mail.id ?? null;
-      items.push({
-        ...mail,
-        mailId,
-        characterName: character.name
-      });
-    });
-  });
-  return items.sort((a, b) => {
-    const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-    const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-    return bTime - aTime;
-  });
+function getMailLabelKey(characterId, labelId) {
+  return `${characterId}:${labelId ?? 'unknown'}`;
 }
 
-function getFilteredMailItems() {
-  const titleTerm = state.admin.mailSearchTitle.trim().toLowerCase();
-  const contentTerm = state.admin.mailSearchContent.trim().toLowerCase();
-  return getAdminMailItems().filter((mail) => {
-    const subject = (mail.subject ?? '').toLowerCase();
-    const body =
-      (mail.body ?? mail.content ?? mail.text ?? '').toString().toLowerCase();
-    const titleMatch = !titleTerm || subject.includes(titleTerm);
-    const contentMatch = !contentTerm || body.includes(contentTerm);
-    return titleMatch && contentMatch;
-  });
+function getMailDetailKey(characterId, mailId) {
+  return `${characterId}:${mailId ?? 'unknown'}`;
+}
+
+function getMailLabelDisplayName(label) {
+  return label?.name ?? label?.label_name ?? `Label ${label?.label_id ?? ''}`;
 }
 
 function getMailPagination(totalItems, pageSize) {
@@ -976,12 +1086,6 @@ function getMailPagination(totalItems, pageSize) {
     totalPages
   );
   return { totalPages, currentPage };
-}
-
-function getMailDetailId(mail) {
-  return `${mail.mailId ?? 'mail'}:${mail.characterName ?? 'unknown'}:${
-    mail.timestamp ?? 'unknown'
-  }`;
 }
 
 function getQueueProgressPercent(entry) {
@@ -1088,9 +1192,7 @@ function renderAdminSettingsPanel(wrapper) {
   orderedGroups.forEach((group, index) => {
     const details = document.createElement('details');
     details.className = 'card admin-settings-group';
-    details.open =
-      state.admin.expandedSettingGroups.has(group.key) ||
-      (!state.admin.expandedSettingGroups.size && index === 0);
+    details.open = state.admin.expandedSettingGroups.has(group.key);
     details.addEventListener('toggle', () => {
       if (details.open) {
         state.admin.expandedSettingGroups.add(group.key);
@@ -1291,8 +1393,7 @@ function renderAdminModule() {
     state.admin.data = null;
     state.admin.dataError = null;
     state.admin.lastDataRequestAt = {};
-    state.admin.mailSelectedId = null;
-    state.admin.mailPage = 1;
+    resetAdminMailState();
     renderAdminModule();
   });
   accountRow.appendChild(accountLabel);
@@ -1306,9 +1407,7 @@ function renderAdminModule() {
   getAdminFeatureDefinitions().forEach((feature, index) => {
     const details = document.createElement('details');
     details.className = 'card admin-feature-card';
-    details.open =
-      state.admin.expandedFeatures.has(feature.key) ||
-      (!state.admin.expandedFeatures.size && index === 0);
+    details.open = state.admin.expandedFeatures.has(feature.key);
     details.addEventListener('toggle', () => {
       if (details.open) {
         state.admin.expandedFeatures.add(feature.key);
@@ -1326,149 +1425,276 @@ function renderAdminModule() {
     content.className = 'admin-feature-content';
 
     if (feature.key === 'mail') {
-      content.appendChild(
-        createAdminDataActionRow({ type: 'mail', label: 'Refresh mail data' })
-      );
-      const searchRow = document.createElement('div');
-      searchRow.className = 'admin-search-row';
-      const titleInput = document.createElement('input');
-      titleInput.type = 'text';
-      titleInput.placeholder = 'Search by title...';
-      titleInput.value = state.admin.mailSearchTitle;
-      titleInput.addEventListener('input', (event) => {
-        state.admin.mailSearchTitle = event.target.value;
-        state.admin.mailPage = 1;
-        renderAdminModule();
-      });
-      const contentInput = document.createElement('input');
-      contentInput.type = 'text';
-      contentInput.placeholder = 'Search by content...';
-      contentInput.value = state.admin.mailSearchContent;
-      contentInput.addEventListener('input', (event) => {
-        state.admin.mailSearchContent = event.target.value;
-        state.admin.mailPage = 1;
-        renderAdminModule();
-      });
-      searchRow.appendChild(titleInput);
-      searchRow.appendChild(contentInput);
-      content.appendChild(searchRow);
-
       const list = document.createElement('div');
       list.className = 'admin-empty-state';
-      if (state.admin.loadingData) {
-        list.textContent = 'Loading mail for the selected account...';
-      } else if (state.admin.dataError) {
-        list.textContent = `Unable to load mail data: ${state.admin.dataError}`;
+      if (state.admin.dataError) {
+        list.textContent = `Unable to load admin data: ${state.admin.dataError}`;
+        content.appendChild(list);
       } else if (!adminCharacters.length) {
-        list.textContent = 'No mail loaded for the selected account yet.';
+        list.textContent = state.admin.loadingData
+          ? 'Loading character data...'
+          : 'No characters are available for this account yet.';
+        content.appendChild(list);
       } else {
-        const mailItems = getFilteredMailItems();
-        if (!mailItems.length) {
-          list.textContent = 'No mail loaded for the selected account yet.';
-        } else {
-          list.innerHTML = '';
-          const mailList = document.createElement('ul');
-          mailList.className = 'panel-list';
-          const pageSize = 10;
-          const { totalPages, currentPage } = getMailPagination(
-            mailItems.length,
-            pageSize
-          );
-          const startIndex = (currentPage - 1) * pageSize;
-          const pageItems = mailItems.slice(startIndex, startIndex + pageSize);
-          pageItems.forEach((mail) => {
-            const entry = document.createElement('li');
-            const subject = mail.subject ?? 'Untitled mail';
-            const timestamp = mail.timestamp
-              ? new Date(mail.timestamp).toLocaleString()
-              : 'Unknown time';
-            const mailId = getMailDetailId(mail);
-            const subjectButton = document.createElement('button');
-            subjectButton.type = 'button';
-            subjectButton.className = 'admin-mail-subject';
-            subjectButton.textContent = subject;
-            subjectButton.addEventListener('click', () => {
-              state.admin.mailSelectedId =
-                state.admin.mailSelectedId === mailId ? null : mailId;
-              renderAdminModule();
+        list.innerHTML = '';
+        adminCharacters.forEach((character) => {
+          const characterId = character.characterId ?? character.character_id ?? null;
+          const mailCard = document.createElement('div');
+          mailCard.className = 'card admin-mail-card';
+
+          const header = document.createElement('div');
+          header.className = 'admin-mail-card-header';
+          const title = document.createElement('h4');
+          title.textContent = character.name ?? 'Unknown character';
+          header.appendChild(title);
+          mailCard.appendChild(header);
+
+          if (!characterId) {
+            const missing = document.createElement('p');
+            missing.className = 'muted';
+            missing.textContent = 'Character ID unavailable for mail lookups.';
+            mailCard.appendChild(missing);
+            list.appendChild(mailCard);
+            return;
+          }
+
+          const labels =
+            state.admin.mail.labelsByCharacter[characterId] ?? [];
+          const labelsError = state.admin.mail.labelsError[characterId];
+          const labelsLoading = state.admin.mail.labelsLoading.has(characterId);
+          if (!labels.length && !labelsLoading) {
+            requestAdminMailLabels({ characterId });
+          }
+
+          const labelRow = document.createElement('div');
+          labelRow.className = 'admin-mail-labels';
+
+          if (labelsLoading) {
+            const loading = document.createElement('span');
+            loading.className = 'muted';
+            loading.textContent = '⏳ Loading labels...';
+            labelRow.appendChild(loading);
+          } else if (labelsError) {
+            const error = document.createElement('span');
+            error.className = 'muted';
+            error.textContent = `Unable to load labels: ${labelsError}`;
+            labelRow.appendChild(error);
+          } else if (!labels.length) {
+            const empty = document.createElement('span');
+            empty.className = 'muted';
+            empty.textContent = 'No labels found for this character.';
+            labelRow.appendChild(empty);
+          } else {
+            const selectedLabelId =
+              state.admin.mail.selectedLabelByCharacter[characterId];
+            labels.forEach((label) => {
+              const labelId = label.label_id ?? label.id ?? null;
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'multi-select-button admin-mail-label-button';
+              if (selectedLabelId === labelId) {
+                button.classList.add('is-selected');
+              }
+              const unreadCount = label.unread_count ?? null;
+              const labelName = getMailLabelDisplayName(label);
+              button.textContent =
+                typeof unreadCount === 'number'
+                  ? `${labelName} (${unreadCount})`
+                  : labelName;
+              button.addEventListener('click', () => {
+                const nextLabel =
+                  selectedLabelId === labelId ? null : labelId;
+                state.admin.mail.selectedLabelByCharacter[characterId] = nextLabel;
+                state.admin.mailSelectedId = null;
+                state.admin.mailPage = 1;
+                if (nextLabel) {
+                  requestAdminMailHeaders({
+                    characterId,
+                    labelId: nextLabel
+                  });
+                }
+                renderAdminModule();
+              });
+              labelRow.appendChild(button);
             });
-            const row = document.createElement('div');
-            row.className = 'queue-row';
-            const nameWrapper = document.createElement('div');
-            nameWrapper.className = 'queue-name';
-            nameWrapper.appendChild(subjectButton);
-            row.appendChild(nameWrapper);
-            const meta = document.createElement('span');
-            meta.className = 'queue-meta';
-            meta.textContent = `${mail.characterName} • ${timestamp}`;
-            row.appendChild(meta);
-            entry.appendChild(row);
+          }
+          mailCard.appendChild(labelRow);
 
-            if (state.admin.mailSelectedId === mailId) {
-              const detail = document.createElement('div');
-              detail.className = 'admin-mail-detail';
-              const fromText = formatMailParticipant(
-                mail.from_name ?? mail.fromName ?? mail.from ?? null
-              );
-              const recipients =
-                mail.recipients ??
-                mail.to ??
-                mail.recipientsNames ??
-                mail.recipients_names ??
-                [];
-              const toText = Array.isArray(recipients)
-                ? recipients.map(formatMailParticipant).join(', ')
-                : formatMailParticipant(recipients);
-              const metaRow = document.createElement('div');
-              metaRow.className = 'admin-mail-meta';
-              metaRow.innerHTML = `
-                <span><strong>From:</strong> ${fromText}</span>
-                <span><strong>To:</strong> ${toText || 'Unknown'}</span>
-              `;
-              detail.appendChild(metaRow);
+          const selectedLabelId =
+            state.admin.mail.selectedLabelByCharacter[characterId];
+          if (selectedLabelId) {
+            const fetchAllRow = document.createElement('div');
+            fetchAllRow.className = 'admin-mail-actions';
+            const fetchAllButton = document.createElement('button');
+            fetchAllButton.type = 'button';
+            fetchAllButton.className = 'button secondary admin-mail-fetch-all';
+            fetchAllButton.textContent = 'Fetch all mail for selected label';
+            fetchAllButton.addEventListener('click', () => {
+              requestAdminMailHeaders({
+                characterId,
+                labelId: selectedLabelId,
+                fetchAll: true
+              });
+            });
+            fetchAllRow.appendChild(fetchAllButton);
+            mailCard.appendChild(fetchAllRow);
+          }
 
-              const body = document.createElement('div');
-              body.className = 'admin-mail-body';
-              const bodyText =
-                mail.body ?? mail.content ?? mail.text ?? 'No content available.';
-              body.textContent = bodyText;
-              detail.appendChild(body);
-              entry.appendChild(detail);
+          const mailListWrapper = document.createElement('div');
+          mailListWrapper.className = 'admin-mail-list';
+          if (!selectedLabelId) {
+            const prompt = document.createElement('p');
+            prompt.className = 'muted';
+            prompt.textContent = 'Select a label to view mail headers.';
+            mailListWrapper.appendChild(prompt);
+          } else {
+            const mailKey = getMailLabelKey(characterId, selectedLabelId);
+            const mailItems =
+              state.admin.mail.mailHeadersByLabel[mailKey] ?? [];
+            const mailLoading = state.admin.mail.mailHeadersLoading.has(mailKey);
+            const mailError = state.admin.mail.mailHeadersError[mailKey];
+            if (!mailItems.length && !mailLoading) {
+              requestAdminMailHeaders({
+                characterId,
+                labelId: selectedLabelId
+              });
             }
-            mailList.appendChild(entry);
-          });
-          list.appendChild(mailList);
+            if (mailLoading && !mailItems.length) {
+              const loading = document.createElement('p');
+              loading.className = 'muted';
+              loading.textContent = '⏳ Loading mail headers...';
+              mailListWrapper.appendChild(loading);
+            } else if (mailError) {
+              const error = document.createElement('p');
+              error.className = 'muted';
+              error.textContent = `Unable to load mail: ${mailError}`;
+              mailListWrapper.appendChild(error);
+            } else if (!mailItems.length) {
+              const empty = document.createElement('p');
+              empty.className = 'muted';
+              empty.textContent = 'No mail found for this label.';
+              mailListWrapper.appendChild(empty);
+            } else {
+              const sortedMail = [...mailItems].sort((a, b) => {
+                const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                return bTime - aTime;
+              });
+              const mailList = document.createElement('ul');
+              mailList.className = 'panel-list';
+              const pageSize = 10;
+              const { totalPages, currentPage } = getMailPagination(
+                sortedMail.length,
+                pageSize
+              );
+              const startIndex = (currentPage - 1) * pageSize;
+              const pageItems = sortedMail.slice(
+                startIndex,
+                startIndex + pageSize
+              );
+              pageItems.forEach((mail) => {
+                const entry = document.createElement('li');
+                const subject = mail.subject ?? 'Untitled mail';
+                const timestamp = mail.timestamp
+                  ? new Date(mail.timestamp).toLocaleString()
+                  : 'Unknown time';
+                const mailId = mail.mail_id ?? mail.mailId ?? mail.id ?? null;
+                const detailKey = getMailDetailKey(characterId, mailId);
+                const subjectButton = document.createElement('button');
+                subjectButton.type = 'button';
+                subjectButton.className = 'admin-mail-subject';
+                subjectButton.textContent = subject;
+                subjectButton.addEventListener('click', () => {
+                  state.admin.mailSelectedId =
+                    state.admin.mailSelectedId === detailKey ? null : detailKey;
+                  renderAdminModule();
+                });
+                const row = document.createElement('div');
+                row.className = 'queue-row';
+                const nameWrapper = document.createElement('div');
+                nameWrapper.className = 'queue-name';
+                nameWrapper.appendChild(subjectButton);
+                row.appendChild(nameWrapper);
+                const meta = document.createElement('span');
+                meta.className = 'queue-meta';
+                meta.textContent = `${character.name} • ${timestamp}`;
+                row.appendChild(meta);
+                entry.appendChild(row);
 
-          const pagination = document.createElement('div');
-          pagination.className = 'admin-pagination';
-          const pageLabel = document.createElement('span');
-          pageLabel.className = 'muted';
-          pageLabel.textContent = `Page ${currentPage} of ${totalPages}`;
-          const prevButton = document.createElement('button');
-          prevButton.className = 'button secondary';
-          prevButton.type = 'button';
-          prevButton.textContent = 'Previous';
-          prevButton.disabled = currentPage <= 1;
-          prevButton.addEventListener('click', () => {
-            state.admin.mailPage = Math.max(1, currentPage - 1);
-            renderAdminModule();
-          });
-          const nextButton = document.createElement('button');
-          nextButton.className = 'button secondary';
-          nextButton.type = 'button';
-          nextButton.textContent = 'Next';
-          nextButton.disabled = currentPage >= totalPages;
-          nextButton.addEventListener('click', () => {
-            state.admin.mailPage = Math.min(totalPages, currentPage + 1);
-            renderAdminModule();
-          });
-          pagination.appendChild(prevButton);
-          pagination.appendChild(pageLabel);
-          pagination.appendChild(nextButton);
-          list.appendChild(pagination);
-        }
+                if (state.admin.mailSelectedId === detailKey) {
+                  const detail =
+                    state.admin.mail.mailDetailCache[detailKey] ?? null;
+                  const isDetailLoading =
+                    state.admin.mail.mailDetailLoading.has(detailKey);
+                  if (!detail && !isDetailLoading) {
+                    requestAdminMailDetail({ characterId, mailId });
+                  }
+                  const detailWrapper = document.createElement('div');
+                  detailWrapper.className = 'admin-mail-detail';
+                  if (!detail) {
+                    const loading = document.createElement('p');
+                    loading.className = 'muted';
+                    loading.textContent = '⏳ Loading mail details...';
+                    detailWrapper.appendChild(loading);
+                  } else {
+                    const fromText = formatMailParticipant(detail.from ?? mail.from ?? null);
+                    const recipients = detail.recipients ?? [];
+                    const toText = Array.isArray(recipients)
+                      ? recipients.map(formatMailParticipant).join(', ')
+                      : formatMailParticipant(recipients);
+                    const metaRow = document.createElement('div');
+                    metaRow.className = 'admin-mail-meta';
+                    metaRow.innerHTML = `
+                      <span><strong>From:</strong> ${fromText}</span>
+                      <span><strong>To:</strong> ${toText || 'Unknown'}</span>
+                    `;
+                    detailWrapper.appendChild(metaRow);
+                    const body = document.createElement('div');
+                    body.className = 'admin-mail-body';
+                    body.textContent = detail.body ?? 'No content available.';
+                    detailWrapper.appendChild(body);
+                  }
+                  entry.appendChild(detailWrapper);
+                }
+                mailList.appendChild(entry);
+              });
+              mailListWrapper.appendChild(mailList);
+
+              const pagination = document.createElement('div');
+              pagination.className = 'admin-pagination';
+              const pageLabel = document.createElement('span');
+              pageLabel.className = 'muted';
+              pageLabel.textContent = `Page ${currentPage} of ${totalPages}`;
+              const prevButton = document.createElement('button');
+              prevButton.className = 'button secondary';
+              prevButton.type = 'button';
+              prevButton.textContent = 'Previous';
+              prevButton.disabled = currentPage <= 1;
+              prevButton.addEventListener('click', () => {
+                state.admin.mailPage = Math.max(1, currentPage - 1);
+                renderAdminModule();
+              });
+              const nextButton = document.createElement('button');
+              nextButton.className = 'button secondary';
+              nextButton.type = 'button';
+              nextButton.textContent = 'Next';
+              nextButton.disabled = currentPage >= totalPages;
+              nextButton.addEventListener('click', () => {
+                state.admin.mailPage = Math.min(totalPages, currentPage + 1);
+                renderAdminModule();
+              });
+              pagination.appendChild(prevButton);
+              pagination.appendChild(pageLabel);
+              pagination.appendChild(nextButton);
+              mailListWrapper.appendChild(pagination);
+            }
+          }
+
+          mailCard.appendChild(mailListWrapper);
+          list.appendChild(mailCard);
+        });
+        content.appendChild(list);
       }
-      content.appendChild(list);
     }
 
     if (feature.key === 'skills') {
