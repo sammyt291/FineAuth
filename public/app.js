@@ -428,6 +428,24 @@ function createCharacterList(
   const list = document.createElement('ul');
   list.className = `panel-list character-list${compact ? ' compact' : ''}`;
   const normalized = normalizeCharacters(characters);
+  const mainNameLower = mainName.toLowerCase();
+  normalized.sort((a, b) => {
+    const aIsMain =
+      mainNameLower &&
+      a.name &&
+      a.name.toLowerCase() === mainNameLower;
+    const bIsMain =
+      mainNameLower &&
+      b.name &&
+      b.name.toLowerCase() === mainNameLower;
+    if (aIsMain && !bIsMain) {
+      return -1;
+    }
+    if (bIsMain && !aIsMain) {
+      return 1;
+    }
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
   if (normalized.length) {
     normalized.forEach((character) => {
       const item = document.createElement('li');
@@ -2061,4 +2079,6 @@ function setupSocket() {
 window.addEventListener('hashchange', navigate);
 setupSocket();
 
-window.location.hash = `#/module/${getDefaultModule()}`;
+if (!window.location.hash) {
+  window.location.hash = `#/module/${getDefaultModule()}`;
+}

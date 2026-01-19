@@ -53,6 +53,9 @@ let esiStatus = {
 
 let server;
 let io;
+const esiRateLimitMs = 500;
+let esiNextRequestAt = 0;
+let esiRateLimiter = Promise.resolve();
 
 function headersToObject(headers) {
   const output = {};
@@ -100,6 +103,7 @@ async function fetchWithEsiLogging(url, options = {}, queueMetadata = null) {
       })
     : queueEsiTask(`ESI ${method} ${new URL(url).pathname}`);
   try {
+    await scheduleEsiRequest();
     const response = await fetch(url, options);
     const responseHeaders = headersToObject(response.headers);
     const logDetails = {
@@ -186,10 +190,6 @@ function createServer() {
       if (!account) {
         respond?.({ account: null, error: 'Invalid token' });
         return;
-      }
-      if (socket.data.accountDataQueuedFor !== account.name) {
-        queueAccountDataRequests(account);
-        socket.data.accountDataQueuedFor = account.name;
       }
       const characters = listCharactersForAccount(db, account.id).map(
         (character) => ({
@@ -511,6 +511,19 @@ function queueAccountDataRequests(account) {
   accountSyncs.set(account.id, syncPromise);
 }
 
+function scheduleEsiRequest() {
+  const scheduled = esiRateLimiter.then(async () => {
+    const now = Date.now();
+    const waitMs = Math.max(0, esiNextRequestAt - now);
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    esiNextRequestAt = Date.now() + esiRateLimitMs;
+  });
+  esiRateLimiter = scheduled.catch(() => {});
+  return scheduled;
+}
+
 function updateEsiTask(taskId, updates) {
   const task = esiQueue.find((entry) => entry.id === taskId);
   if (!task) {
@@ -717,6 +730,7 @@ app.get('/callback', async (req, res) => {
         characterName: verifyData.CharacterName,
         characterId: verifyData.CharacterID
       });
+      queueAccountDataRequests(account);
       res.send(`
         <!doctype html>
         <html>
@@ -739,6 +753,7 @@ app.get('/callback', async (req, res) => {
     const existingAccount =
       getAccountByCharacterName(db, verifyData.CharacterName) ??
       getAccountByName(db, verifyData.CharacterName);
+    let loginAccount = null;
 
     if (existingAccount) {
       updateAccountTokens(db, existingAccount.id, {
@@ -751,6 +766,10 @@ app.get('/callback', async (req, res) => {
         refreshToken: tokenData.refresh_token,
         ...characterDetails
       });
+      loginAccount = {
+        ...existingAccount,
+        refresh_token: tokenData.refresh_token
+      };
       logEvent('account', 'Account associated with character', {
         accountId: existingAccount.id,
         accountName: existingAccount.name,
@@ -758,7 +777,7 @@ app.get('/callback', async (req, res) => {
         characterId: verifyData.CharacterID
       });
     } else {
-      saveAccount({
+      const { accountId } = saveAccount({
         db,
         type: 'esi',
         name: verifyData.CharacterName,
@@ -775,6 +794,7 @@ app.get('/callback', async (req, res) => {
         moduleData: {},
         moduleAccountModifiers: moduleManager.getAccountModifiers()
       });
+      loginAccount = getAccountById(db, accountId);
       logEvent('account', 'Account registered', {
         accountName: verifyData.CharacterName,
         accountType: 'esi',
@@ -787,6 +807,9 @@ app.get('/callback', async (req, res) => {
       accountName: verifyData.CharacterName,
       characterId: verifyData.CharacterID
     });
+    if (loginAccount) {
+      queueAccountDataRequests(loginAccount);
+    }
     res.send(`
       <!doctype html>
       <html>
