@@ -1,0 +1,6 @@
+{
+  "name": "home",
+  "displayName": "Home",
+  "description": "Primary dashboard and helpers",
+  "mainPage": "home"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "landing",
+  "displayName": "Landing / Login",
+  "description": "Landing page with ESI login",
+  "mainPage": "landing",
+  "hidden": true
+}

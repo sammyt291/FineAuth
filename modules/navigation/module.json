@@ -1,0 +1,12 @@
+{
+  "name": "navigation",
+  "displayName": "Navigation Menus",
+  "description": "Top navigation and dropdown menus",
+  "mainPage": "navigation",
+  "permissions": [
+    {
+      "name": "navigation.view",
+      "description": "View the navigation demo module."
+    }
+  ]
+}

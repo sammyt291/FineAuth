@@ -1,0 +1,10 @@
+{
+  "name": "footer",
+  "displayName": "Footer Status",
+  "description": "Footer status bar",
+  "mainPage": "footer",
+  "hidden": true,
+  "config": {
+    "region": "footer"
+  }
+}

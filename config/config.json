@@ -7,13 +7,10 @@
   },
   "modulesPath": "./modules",
   "moduleExtractPath": "./modules_loaded",
-  "adminAuth": {
-    "username": "admin",
-    "password": "change-me"
-  },
   "esi": {
     "refreshIntervalMinutes": 10,
     "characterNameCheckMinutes": 60,
+    "statusRefreshSeconds": 60,
     "clientId": "",
     "clientSecret": "",
     "callbackUrl": "http://localhost:3000/callback",

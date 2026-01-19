@@ -9,12 +9,10 @@ import {
   openDatabase,
   saveAccount,
   getAccountByToken,
-  listAccounts,
-  listCharactersForAccount,
-  deleteAccount,
-  upsertModuleAccountData
+  listCharactersForAccount
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
+import { PermissionsManager } from './permissions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,40 +29,26 @@ const db = openDatabase(path.join(rootDir, 'data.sqlite'));
 
 const esiQueue = [];
 const esiLoginStates = new Map();
-
-const builtInModules = [
-  {
-    name: 'landing',
-    displayName: 'Landing / Login',
-    description: 'Landing page with admin and ESI login',
-    mainPage: 'landing'
-  },
-  {
-    name: 'home',
-    displayName: 'Home',
-    description: 'Primary dashboard and helpers',
-    mainPage: 'home'
-  },
-  {
-    name: 'accounts',
-    displayName: 'Account Management',
-    description: 'Manage FineAuth accounts and access',
-    mainPage: 'accounts'
-  },
-  {
-    name: 'navigation',
-    displayName: 'Navigation Menus',
-    description: 'Top navigation and dropdown menus',
-    mainPage: 'navigation'
-  }
-];
+let esiStatus = {
+  status: 'unknown',
+  players: null,
+  serverVersion: null,
+  lastUpdated: null,
+  error: null
+};
 
 let server;
 let io;
 
+const permissionsManager = new PermissionsManager({
+  permissionsPath: path.join(rootDir, 'config', 'permissions.json')
+});
+permissionsManager.registerPermission('admin', 'Full administrative access.');
+
 const moduleManager = new ModuleManager({
   modulesPath: path.resolve(rootDir, config.modulesPath),
-  moduleExtractPath: path.resolve(rootDir, config.moduleExtractPath)
+  moduleExtractPath: path.resolve(rootDir, config.moduleExtractPath),
+  permissionsManager
 });
 
 moduleManager.registerAccountModifier((account) => account);
@@ -88,6 +72,55 @@ function createServer() {
   io.on('connection', (socket) => {
     socket.emit('modules:update', moduleManager.listModules());
     socket.emit('esi:queue', esiQueue);
+    socket.emit('esi:status', esiStatus);
+
+    socket.on('session:request', (payload, respond) => {
+      const token = payload?.token ?? null;
+      if (!token) {
+        respond?.({ account: null });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account) {
+        respond?.({ account: null, error: 'Invalid token' });
+        return;
+      }
+      const characters = listCharactersForAccount(db, account.id).map(
+        (character) => character.name
+      );
+      respond?.({
+        account: {
+          id: account.id,
+          name: account.name,
+          type: account.type,
+          characters,
+          isAdmin: permissionsManager.isAdmin(account.name)
+        }
+      });
+    });
+
+    socket.on('esi:login', (_payload, respond) => {
+      if (!config.esi.clientId || !config.esi.clientSecret) {
+        respond?.({ error: 'ESI SSO is not configured.' });
+        return;
+      }
+      const state = cryptoRandom();
+      esiLoginStates.set(state, Date.now());
+      const scope = Array.isArray(config.esi.scopes)
+        ? config.esi.scopes.join(' ')
+        : '';
+      const authorizeUrl = new URL('https://login.eveonline.com/v2/oauth/authorize');
+      authorizeUrl.searchParams.set('response_type', 'code');
+      authorizeUrl.searchParams.set('redirect_uri', config.esi.callbackUrl);
+      authorizeUrl.searchParams.set('client_id', config.esi.clientId);
+      authorizeUrl.searchParams.set('scope', scope);
+      authorizeUrl.searchParams.set('state', state);
+      respond?.({ url: authorizeUrl.toString() });
+    });
+
+    socket.on('esi:status:request', (_payload, respond) => {
+      respond?.(esiStatus);
+    });
   });
 
   return httpServer;
@@ -133,19 +166,7 @@ function watchSslFiles() {
 }
 
 async function loadInitialModules() {
-  await moduleManager.loadBuiltInModules(builtInModules);
-  const moduleFiles = fs
-    .readdirSync(path.resolve(rootDir, config.modulesPath))
-    .filter((file) => file.endsWith('.zip'));
-  moduleFiles.forEach((file) => {
-    const name = path.basename(file, '.zip');
-    try {
-      moduleManager.loadModuleZip(name);
-      console.log(`Loaded module ${name}`);
-    } catch (error) {
-      console.warn(`Failed to load module ${name}: ${error.message}`);
-    }
-  });
+  moduleManager.loadModulesFromDisk();
 }
 
 function queueEsiTask(taskName) {
@@ -161,6 +182,7 @@ function clearEsiQueue() {
 function scheduleEsiRefresh() {
   const refreshMs = config.esi.refreshIntervalMinutes * 60 * 1000;
   const nameCheckMs = config.esi.characterNameCheckMinutes * 60 * 1000;
+  const statusRefreshMs = (config.esi.statusRefreshSeconds ?? 60) * 1000;
 
   setInterval(() => {
     queueEsiTask('Refresh ESI tokens');
@@ -175,92 +197,39 @@ function scheduleEsiRefresh() {
       clearEsiQueue();
     }, 2000);
   }, nameCheckMs);
+
+  setInterval(() => {
+    refreshEsiStatus();
+  }, statusRefreshMs);
 }
 
-function parseToken(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  return token ?? null;
-}
-
-function requireAccount(req, res) {
-  const token = parseToken(req);
-  if (!token) {
-    res.status(401).json({ error: 'Missing token' });
-    return null;
-  }
-  const account = getAccountByToken(db, token);
-  if (!account) {
-    res.status(401).json({ error: 'Invalid token' });
-    return null;
-  }
-  return account;
-}
-
-app.get('/api/modules', (req, res) => {
-  res.json({ modules: moduleManager.listModules() });
-});
-
-app.get('/api/session', (req, res) => {
-  const account = requireAccount(req, res);
-  if (!account) {
-    return;
-  }
-  const characters = listCharactersForAccount(db, account.id).map(
-    (character) => character.name
-  );
-  res.json({
-    account: {
-      id: account.id,
-      name: account.name,
-      type: account.type,
-      characters
+async function refreshEsiStatus() {
+  try {
+    const response = await fetch(
+      'https://esi.evetech.net/latest/status/?datasource=tranquility'
+    );
+    if (!response.ok) {
+      throw new Error(`ESI status error: ${response.status}`);
     }
-  });
-});
-
-app.get('/api/esi-queue', (req, res) => {
-  res.json({ queue: esiQueue });
-});
-
-app.post('/api/login/admin', (req, res) => {
-  const { username, password } = req.body;
-  if (
-    username !== config.adminAuth.username ||
-    password !== config.adminAuth.password
-  ) {
-    res.status(401).json({ error: 'Invalid credentials' });
-    return;
+    const data = await response.json();
+    esiStatus = {
+      status: 'online',
+      players: data.players ?? null,
+      serverVersion: data.server_version ?? null,
+      lastUpdated: new Date().toISOString(),
+      error: null
+    };
+  } catch (error) {
+    esiStatus = {
+      status: 'unavailable',
+      players: null,
+      serverVersion: null,
+      lastUpdated: new Date().toISOString(),
+      error: error.message
+    };
   }
-  const accessToken = cryptoRandom();
-  const { accountId } = saveAccount({
-    db,
-    type: 'static',
-    name: username,
-    accessToken,
-    refreshToken: null,
-    characterNames: [],
-    moduleData: {},
-    moduleAccountModifiers: moduleManager.getAccountModifiers()
-  });
-  res.json({ token: accessToken, accountId });
-});
-
-app.get('/api/esi/login', (req, res) => {
-  if (!config.esi.clientId || !config.esi.clientSecret) {
-    res.status(500).send('ESI SSO is not configured.');
-    return;
-  }
-  const state = cryptoRandom();
-  esiLoginStates.set(state, Date.now());
-  const scope = Array.isArray(config.esi.scopes) ? config.esi.scopes.join(' ') : '';
-  const authorizeUrl = new URL('https://login.eveonline.com/v2/oauth/authorize');
-  authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('redirect_uri', config.esi.callbackUrl);
-  authorizeUrl.searchParams.set('client_id', config.esi.clientId);
-  authorizeUrl.searchParams.set('scope', scope);
-  authorizeUrl.searchParams.set('state', state);
-  res.redirect(authorizeUrl.toString());
-});
+  io?.emit('esi:status', esiStatus);
+}
 
 app.get('/callback', async (req, res) => {
   const { code, state } = req.query;
@@ -341,60 +310,10 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-app.get('/api/accounts', (req, res) => {
-  const account = requireAccount(req, res);
-  if (!account) {
-    return;
-  }
-  if (account.type !== 'static') {
-    res.status(403).json({ error: 'Not authorized' });
-    return;
-  }
-  const accounts = listAccounts(db).map((item) => ({
-    id: item.id,
-    name: item.name,
-    type: item.type,
-    createdAt: item.created_at
-  }));
-  res.json({ accounts });
-});
-
-app.delete('/api/accounts/:id', (req, res) => {
-  const account = requireAccount(req, res);
-  if (!account) {
-    return;
-  }
-  if (account.type !== 'static') {
-    res.status(403).json({ error: 'Not authorized' });
-    return;
-  }
-  const targetId = Number(req.params.id);
-  if (!Number.isFinite(targetId)) {
-    res.status(400).json({ error: 'Invalid account id' });
-    return;
-  }
-  if (targetId === account.id) {
-    res.status(403).json({ error: 'Cannot delete your own account' });
-    return;
-  }
-  deleteAccount(db, targetId);
-  res.json({ status: 'ok' });
-});
-
-app.post('/api/modules/:name/account-data', (req, res) => {
-  const account = requireAccount(req, res);
-  if (!account) {
-    return;
-  }
-  const moduleName = req.params.name;
-  upsertModuleAccountData(db, account.id, moduleName, req.body);
-  res.json({ status: 'ok' });
-});
-
 app.use('/modules', (req, res, next) => {
   const moduleName = req.path.split('/').filter(Boolean)[0];
   const moduleData = moduleManager.getModule(moduleName);
-  if (!moduleData || moduleData.builtIn) {
+  if (!moduleData) {
     res.status(404).send('Module not found');
     return;
   }
@@ -413,20 +332,46 @@ function handleConsoleCommands() {
     if (!command) {
       return;
     }
-    const [action, moduleName] = command.split(' ');
+    const tokens = command.split(' ').filter(Boolean);
+    const action = tokens[0]?.toLowerCase();
+    const moduleName = tokens[1];
     try {
+      if (action === 'help') {
+        console.log('Commands:');
+        console.log('  help - Show available commands');
+        console.log('  load <module> - Load a module (folder or zip)');
+        console.log('  unload <module> - Unload a module');
+        console.log('  reload <module> - Reload a module');
+        console.log('  set Admin <username> - Grant admin permissions to an ESI user');
+        return;
+      }
+      if (action === 'set' && tokens[1]?.toLowerCase() === 'admin') {
+        const accountName = tokens.slice(2).join(' ');
+        if (!accountName) {
+          console.log('Usage: set Admin <username>');
+          return;
+        }
+        permissionsManager.setAccountPermission('admin', accountName, true);
+        io?.emit('permissions:updated');
+        console.log(`Granted admin access to ${accountName}.`);
+        return;
+      }
       if (action === 'load' && moduleName) {
-        moduleManager.loadModuleZip(moduleName);
+        moduleManager.loadModule(moduleName);
         console.log(`Loaded module ${moduleName}`);
-      } else if (action === 'unload' && moduleName) {
+        return;
+      }
+      if (action === 'unload' && moduleName) {
         moduleManager.unloadModule(moduleName);
         console.log(`Unloaded module ${moduleName}`);
-      } else if (action === 'reload' && moduleName) {
+        return;
+      }
+      if (action === 'reload' && moduleName) {
         moduleManager.reloadModule(moduleName);
         console.log(`Reloaded module ${moduleName}`);
-      } else {
-        console.log('Commands: load <module>, unload <module>, reload <module>');
+        return;
       }
+      console.log('Type "help" to view available commands.');
     } catch (error) {
       console.error(error.message);
     }
@@ -437,4 +382,5 @@ await loadInitialModules();
 startServer();
 watchSslFiles();
 scheduleEsiRefresh();
+refreshEsiStatus();
 handleConsoleCommands();

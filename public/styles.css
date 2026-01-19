@@ -26,6 +26,13 @@ body {
   z-index: 10;
 }
 
+.nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
 .nav-list {
   display: flex;
   gap: 1.5rem;
@@ -37,6 +44,17 @@ body {
 
 .nav-item {
   position: relative;
+}
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.nav-button {
+  font-size: 0.85rem;
+  padding: 0.5rem 0.85rem;
 }
 
 .nav-link {
@@ -82,6 +100,32 @@ body {
 #main-content {
   flex: 1;
   padding: 2rem;
+}
+
+#footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 13, 25, 0.9);
+  padding: 0.75rem 2rem;
+  font-size: 0.9rem;
+  color: #c9d5ff;
+}
+
+.footer-inner {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.footer-status {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.footer-label {
+  font-weight: 600;
+  color: #e7ecff;
 }
 
 .card {
