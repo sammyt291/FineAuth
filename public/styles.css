@@ -346,21 +346,36 @@ body {
   padding: 0.45rem 0.6rem;
 }
 
-.admin-feature-row {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+.admin-feature-grid {
+  display: grid;
+  gap: 1.5rem;
 }
 
-.admin-feature-button.is-active {
-  border-color: #7cf0ff;
-  color: #7cf0ff;
+.admin-feature-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.admin-feature-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 1rem 1.25rem;
+  font-weight: 600;
+  color: #e7ecff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-feature-summary::-webkit-details-marker {
+  display: none;
 }
 
 .admin-feature-content {
   display: grid;
   gap: 1.5rem;
   position: relative;
+  padding: 0 1.25rem 1.25rem;
 }
 
 .admin-search-row {
@@ -391,11 +406,14 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-right: none;
   border-radius: 0.75rem 0 0 0.75rem;
-  padding: 0.5rem 0.85rem;
+  padding: 0.75rem 0.35rem;
   font-size: 0.9rem;
   cursor: pointer;
   color: #e7ecff;
   z-index: 16;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.12em;
 }
 
 .admin-settings-tab:hover {
@@ -425,9 +443,30 @@ body {
   gap: 1rem;
 }
 
+.admin-settings-group {
+  padding: 0;
+  overflow: hidden;
+}
+
+.admin-settings-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  color: #e7ecff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-settings-summary::-webkit-details-marker {
+  display: none;
+}
+
 .admin-settings-field {
   display: grid;
   gap: 0.5rem;
+  padding: 0 1rem 1rem;
 }
 
 .admin-settings-field select,

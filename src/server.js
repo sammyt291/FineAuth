@@ -107,6 +107,10 @@ function createServer() {
         respond?.({ account: null, error: 'Invalid token' });
         return;
       }
+      if (socket.data.accountDataQueuedFor !== account.name) {
+        queueAccountDataRequests(account.name);
+        socket.data.accountDataQueuedFor = account.name;
+      }
       const characters = listCharactersForAccount(db, account.id).map(
         (character) => ({
           name: character.name,
@@ -366,6 +370,25 @@ function queueUserEsiTask({ taskName, accountName, type }) {
   esiQueue.push(task);
   emitEsiQueue();
   return task;
+}
+
+function queueAccountDataRequests(accountName) {
+  if (!accountName) {
+    return;
+  }
+  const tasks = [
+    { taskName: 'Sync mail data', type: 'mail' },
+    { taskName: 'Sync skill data', type: 'skills' },
+    { taskName: 'Sync training queue', type: 'training-queue' },
+    { taskName: 'Sync wallet history', type: 'wallet' }
+  ];
+  tasks.forEach((task) => {
+    queueUserEsiTask({
+      taskName: task.taskName,
+      accountName,
+      type: task.type
+    });
+  });
 }
 
 function updateEsiTask(taskId, updates) {
