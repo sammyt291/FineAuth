@@ -1,0 +1,16 @@
+{
+  "name": "fineauth",
+  "version": "0.1.0",
+  "description": "FineAuth Eve Online authentication service",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^9.4.3",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

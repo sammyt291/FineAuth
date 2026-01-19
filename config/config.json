@@ -1,0 +1,18 @@
+{
+  "port": 3000,
+  "https": {
+    "enabled": false,
+    "keyPath": "./config/ssl/key.pem",
+    "certPath": "./config/ssl/cert.pem"
+  },
+  "modulesPath": "./modules",
+  "moduleExtractPath": "./modules_loaded",
+  "adminAuth": {
+    "username": "admin",
+    "password": "change-me"
+  },
+  "esi": {
+    "refreshIntervalMinutes": 10,
+    "characterNameCheckMinutes": 60
+  }
+}
