@@ -376,6 +376,7 @@ function queueAccountDataRequests(accountName) {
   if (!accountName) {
     return;
   }
+  const queueRunMs = (config.esi.queueRunSeconds ?? 12) * 1000;
   const tasks = [
     { taskName: 'Sync mail data', type: 'mail' },
     { taskName: 'Sync skill data', type: 'skills' },
@@ -383,11 +384,14 @@ function queueAccountDataRequests(accountName) {
     { taskName: 'Sync wallet history', type: 'wallet' }
   ];
   tasks.forEach((task) => {
-    queueUserEsiTask({
+    const queuedTask = queueUserEsiTask({
       taskName: task.taskName,
       accountName,
       type: task.type
     });
+    setTimeout(() => {
+      completeEsiTask(queuedTask.id);
+    }, queueRunMs);
   });
 }
 
