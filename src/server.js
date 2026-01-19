@@ -9,6 +9,7 @@ import {
   openDatabase,
   saveAccount,
   getAccountByToken,
+  listAccounts,
   listCharactersForAccount,
   addCharacterToAccount,
   getAccountById,
@@ -270,6 +271,26 @@ function createServer() {
       moduleSettingsManager.updateModuleSettings(moduleData, payload.settings ?? {});
       moduleManager.notifyClients();
       respond?.({ ok: true });
+    });
+
+    socket.on('admin:accounts:request', (payload, respond) => {
+      const token = payload?.token;
+      if (!token) {
+        respond?.({ error: 'Missing session token.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const accounts = listAccounts(db).map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        createdAt: entry.created_at
+      }));
+      respond?.({ accounts });
     });
   });
 

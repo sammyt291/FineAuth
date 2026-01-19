@@ -3,6 +3,9 @@
   "displayName": "ESI Queue",
   "description": "Track in-flight ESI requests.",
   "mainPage": "index.html",
+  "config": {
+    "hideFromNav": true
+  },
   "homePanel": {
     "title": "ESI Queue",
     "description": "Your queued ESI requests and ETAs.",

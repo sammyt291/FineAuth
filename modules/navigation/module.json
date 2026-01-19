@@ -3,6 +3,9 @@
   "displayName": "Navigation Menus",
   "description": "Top navigation and dropdown menus",
   "mainPage": "navigation",
+  "config": {
+    "hideFromNav": true
+  },
   "adminSettings": {
     "title": "Navigation Order",
     "fields": [

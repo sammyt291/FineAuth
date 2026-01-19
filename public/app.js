@@ -15,7 +15,17 @@ const state = {
   esiStatus: null,
   charactersError: null,
   charactersRefreshing: false,
-  settingsModal: null
+  settingsModal: null,
+  admin: {
+    accounts: [],
+    selectedAccountId: null,
+    settings: null,
+    activeFeature: 'mail',
+    settingsFeature: null,
+    settingsOpen: false,
+    loadingAccounts: false,
+    loadingSettings: false
+  }
 };
 
 let socket;
@@ -208,6 +218,12 @@ function renderNav() {
       return false;
     }
     if (module.hidden || module.config?.region === 'footer') {
+      return false;
+    }
+    if (module.config?.hideFromNav) {
+      return false;
+    }
+    if (module.config?.adminOnly && !state.account?.isAdmin) {
       return false;
     }
     return true;
@@ -630,6 +646,377 @@ function renderCharactersModule() {
   mainContent.appendChild(wrapper);
 }
 
+function requestAdminAccounts() {
+  if (!socket || !state.account?.isAdmin || state.admin.loadingAccounts) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.loadingAccounts = true;
+  socket.emit('admin:accounts:request', { token }, (response) => {
+    state.admin.loadingAccounts = false;
+    if (response?.accounts) {
+      state.admin.accounts = response.accounts;
+      if (!state.admin.selectedAccountId && state.admin.accounts.length) {
+        state.admin.selectedAccountId = state.admin.accounts[0].id;
+      }
+    }
+    renderAdminModule();
+  });
+}
+
+function requestAdminSettings() {
+  if (!socket || !state.account?.isAdmin || state.admin.loadingSettings) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.loadingSettings = true;
+  socket.emit(
+    'module:settings:request',
+    { token, moduleName: 'admin' },
+    (response) => {
+      state.admin.loadingSettings = false;
+      if (!response?.error) {
+        state.admin.settings = response;
+      }
+      renderAdminModule();
+    }
+  );
+}
+
+function ensureAdminData() {
+  if (!state.admin.accounts.length && !state.admin.loadingAccounts) {
+    requestAdminAccounts();
+  }
+  if (!state.admin.settings && !state.admin.loadingSettings) {
+    requestAdminSettings();
+  }
+}
+
+function getAdminAccountOptions() {
+  return [...state.admin.accounts].sort((a, b) => {
+    if (a.createdAt && b.createdAt) {
+      return new Date(a.createdAt) - new Date(b.createdAt);
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderAdminSettingsPanel(wrapper) {
+  if (!state.admin.settingsOpen || !state.admin.settingsFeature) {
+    return;
+  }
+  const panel = document.createElement('div');
+  panel.className = 'admin-settings-panel';
+
+  const header = document.createElement('div');
+  header.className = 'admin-settings-header';
+  const title = document.createElement('h3');
+  title.textContent = 'Feature Settings';
+  const closeButton = document.createElement('button');
+  closeButton.className = 'button secondary';
+  closeButton.type = 'button';
+  closeButton.textContent = 'Close';
+  closeButton.addEventListener('click', () => {
+    state.admin.settingsOpen = false;
+    state.admin.settingsFeature = null;
+    renderAdminModule();
+  });
+  header.appendChild(title);
+  header.appendChild(closeButton);
+  panel.appendChild(header);
+
+  if (!state.admin.settings) {
+    const loading = document.createElement('p');
+    loading.className = 'muted';
+    loading.textContent = 'Loading settings...';
+    panel.appendChild(loading);
+    wrapper.appendChild(panel);
+    return;
+  }
+
+  const fields =
+    state.admin.settings.adminSettings?.fields?.filter(
+      (field) => field.feature === state.admin.settingsFeature
+    ) ?? [];
+  if (!fields.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No settings available for this feature yet.';
+    panel.appendChild(empty);
+  } else {
+    fields.forEach((field) => {
+      const row = document.createElement('div');
+      row.className = 'admin-settings-field';
+      const label = document.createElement('label');
+      label.textContent = field.label ?? field.id ?? 'Setting';
+      row.appendChild(label);
+
+      let input;
+      if (field.type === 'select') {
+        input = document.createElement('select');
+        (field.options ?? []).forEach((option) => {
+          const optionEl = document.createElement('option');
+          optionEl.value = option;
+          optionEl.textContent = option;
+          input.appendChild(optionEl);
+        });
+        input.value =
+          state.admin.settings?.settings?.[field.id] ?? field.default ?? '';
+      } else if (field.type === 'toggle') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked =
+          state.admin.settings?.settings?.[field.id] ?? field.default ?? false;
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.value =
+          state.admin.settings?.settings?.[field.id] ?? field.default ?? '';
+      }
+      input.dataset.fieldId = field.id;
+      input.dataset.fieldType = field.type ?? 'text';
+      row.appendChild(input);
+
+      if (field.help) {
+        const help = document.createElement('p');
+        help.className = 'modal-help';
+        help.textContent = field.help;
+        row.appendChild(help);
+      }
+      panel.appendChild(row);
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'admin-settings-actions';
+    const saveButton = document.createElement('button');
+    saveButton.className = 'button';
+    saveButton.type = 'button';
+    saveButton.textContent = 'Save settings';
+    saveButton.addEventListener('click', () => {
+      const token = localStorage.getItem('fineauth_token');
+      const nextSettings = {
+        ...(state.admin.settings?.settings ?? {})
+      };
+      panel.querySelectorAll('[data-field-id]').forEach((inputEl) => {
+        const fieldId = inputEl.dataset.fieldId;
+        const fieldType = inputEl.dataset.fieldType;
+        if (fieldType === 'toggle') {
+          nextSettings[fieldId] = inputEl.checked;
+        } else {
+          nextSettings[fieldId] = inputEl.value;
+        }
+      });
+      socket.emit(
+        'module:settings:update',
+        {
+          token,
+          moduleName: 'admin',
+          settings: nextSettings
+        },
+        (response) => {
+          if (response?.ok) {
+            state.admin.settings = {
+              ...state.admin.settings,
+              settings: nextSettings
+            };
+          }
+          state.admin.settingsOpen = false;
+          state.admin.settingsFeature = null;
+          renderAdminModule();
+        }
+      );
+    });
+    actions.appendChild(saveButton);
+    panel.appendChild(actions);
+  }
+
+  wrapper.appendChild(panel);
+}
+
+function renderAdminModule() {
+  mainContent.innerHTML = '';
+  if (!state.account?.isAdmin) {
+    renderHome();
+    return;
+  }
+  ensureAdminData();
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'module-wrapper admin-module';
+
+  const headerCard = document.createElement('div');
+  headerCard.className = 'card admin-header-card';
+  const headerTitle = document.createElement('h2');
+  headerTitle.textContent = 'Admin';
+  headerCard.appendChild(headerTitle);
+
+  const headerText = document.createElement('p');
+  headerText.textContent =
+    'Select a main account and review mail, skills, and ISK data across the auth.';
+  headerCard.appendChild(headerText);
+
+  const accountRow = document.createElement('div');
+  accountRow.className = 'admin-account-row';
+  const accountLabel = document.createElement('label');
+  accountLabel.textContent = 'Main account';
+  const accountSelect = document.createElement('select');
+  accountSelect.disabled = state.admin.loadingAccounts;
+  const options = getAdminAccountOptions();
+  if (!options.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = state.admin.loadingAccounts
+      ? 'Loading accounts...'
+      : 'No accounts found';
+    accountSelect.appendChild(option);
+  } else {
+    options.forEach((account) => {
+      const option = document.createElement('option');
+      option.value = account.id;
+      const createdAt = account.createdAt
+        ? new Date(account.createdAt).toLocaleDateString()
+        : 'Unknown date';
+      option.textContent = `${account.name} • ${createdAt}`;
+      accountSelect.appendChild(option);
+    });
+  }
+  if (state.admin.selectedAccountId) {
+    accountSelect.value = String(state.admin.selectedAccountId);
+  }
+  accountSelect.addEventListener('change', (event) => {
+    const nextId = Number(event.target.value);
+    state.admin.selectedAccountId = Number.isNaN(nextId) ? null : nextId;
+    renderAdminModule();
+  });
+  accountRow.appendChild(accountLabel);
+  accountRow.appendChild(accountSelect);
+  headerCard.appendChild(accountRow);
+  wrapper.appendChild(headerCard);
+
+  const featureRow = document.createElement('div');
+  featureRow.className = 'admin-feature-row';
+  const features = [
+    { key: 'mail', label: 'Mail Browser' },
+    { key: 'skills', label: 'Skills & Training' },
+    { key: 'history', label: 'ISK History' }
+  ];
+  features.forEach((feature) => {
+    const button = document.createElement('button');
+    button.className = `button secondary admin-feature-button${
+      state.admin.activeFeature === feature.key ? ' is-active' : ''
+    }`;
+    button.type = 'button';
+    button.textContent = feature.label;
+    button.addEventListener('click', () => {
+      state.admin.activeFeature = feature.key;
+      state.admin.settingsOpen = false;
+      state.admin.settingsFeature = null;
+      renderAdminModule();
+    });
+    featureRow.appendChild(button);
+  });
+  wrapper.appendChild(featureRow);
+
+  const content = document.createElement('div');
+  content.className = 'admin-feature-content';
+
+  if (state.admin.activeFeature === 'mail') {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const title = document.createElement('h3');
+    title.textContent = 'Mail Browser';
+    card.appendChild(title);
+
+    const searchRow = document.createElement('div');
+    searchRow.className = 'admin-search-row';
+    const titleInput = document.createElement('input');
+    titleInput.type = 'text';
+    titleInput.placeholder = 'Search by title...';
+    const contentInput = document.createElement('input');
+    contentInput.type = 'text';
+    contentInput.placeholder = 'Search by content...';
+    searchRow.appendChild(titleInput);
+    searchRow.appendChild(contentInput);
+    card.appendChild(searchRow);
+
+    const list = document.createElement('div');
+    list.className = 'admin-empty-state';
+    list.textContent = 'No mail loaded for the selected account yet.';
+    card.appendChild(list);
+    content.appendChild(card);
+  }
+
+  if (state.admin.activeFeature === 'skills') {
+    const skillsCard = document.createElement('div');
+    skillsCard.className = 'card';
+    const title = document.createElement('h3');
+    title.textContent = 'Skills Overview';
+    skillsCard.appendChild(title);
+    const skillsList = document.createElement('ul');
+    skillsList.className = 'panel-list';
+    const emptySkill = document.createElement('li');
+    emptySkill.className = 'muted';
+    emptySkill.textContent = 'No skill data loaded for the selected account.';
+    skillsList.appendChild(emptySkill);
+    skillsCard.appendChild(skillsList);
+    content.appendChild(skillsCard);
+
+    const queueCard = document.createElement('div');
+    queueCard.className = 'card';
+    const queueTitle = document.createElement('h3');
+    queueTitle.textContent = 'Training Queue';
+    queueCard.appendChild(queueTitle);
+    const queueList = document.createElement('ul');
+    queueList.className = 'panel-list';
+    const emptyQueue = document.createElement('li');
+    emptyQueue.className = 'muted';
+    emptyQueue.textContent = 'No active training queue entries.';
+    queueList.appendChild(emptyQueue);
+    queueCard.appendChild(queueList);
+    content.appendChild(queueCard);
+
+    const walletCard = document.createElement('div');
+    walletCard.className = 'card';
+    const walletTitle = document.createElement('h3');
+    walletTitle.textContent = 'ISK Snapshot';
+    walletCard.appendChild(walletTitle);
+    const walletValue = document.createElement('p');
+    walletValue.className = 'muted';
+    walletValue.textContent = 'ISK totals will appear once wallet data syncs.';
+    walletCard.appendChild(walletValue);
+    content.appendChild(walletCard);
+  }
+
+  if (state.admin.activeFeature === 'history') {
+    const historyCard = document.createElement('div');
+    historyCard.className = 'card';
+    const title = document.createElement('h3');
+    title.textContent = 'ISK History';
+    historyCard.appendChild(title);
+    const summary = document.createElement('p');
+    summary.className = 'muted';
+    summary.textContent =
+      'No ISK history data available yet for the selected account.';
+    historyCard.appendChild(summary);
+    content.appendChild(historyCard);
+  }
+
+  const settingsTab = document.createElement('button');
+  settingsTab.className = 'admin-settings-tab';
+  settingsTab.type = 'button';
+  settingsTab.textContent = '⚙ Settings';
+  settingsTab.addEventListener('click', () => {
+    state.admin.settingsOpen = true;
+    state.admin.settingsFeature = state.admin.activeFeature;
+    renderAdminModule();
+  });
+  content.appendChild(settingsTab);
+
+  wrapper.appendChild(content);
+  renderAdminSettingsPanel(wrapper);
+  mainContent.appendChild(wrapper);
+}
+
 function renderModulePage(moduleName) {
   if (!state.account) {
     renderLanding();
@@ -645,6 +1032,10 @@ function renderModulePage(moduleName) {
   }
   if (moduleName === 'characters') {
     renderCharactersModule();
+    return;
+  }
+  if (moduleName === 'admin') {
+    renderAdminModule();
     return;
   }
   if (moduleName === 'navigation') {
@@ -704,9 +1095,9 @@ function createModuleSettingsButton(moduleData) {
     return null;
   }
   const button = document.createElement('button');
-  button.className = 'module-settings-button';
+  button.className = 'module-settings-tab';
   button.type = 'button';
-  button.textContent = '⚙️';
+  button.textContent = '⚙ Settings';
   button.title = 'Module settings';
   button.addEventListener('click', () => openModuleSettings(moduleData));
   return button;
