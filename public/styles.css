@@ -145,6 +145,34 @@ body {
   margin-top: 1.5rem;
 }
 
+.login-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  text-align: left;
+}
+
+.login-form label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #d7defa;
+}
+
+.login-form input {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(9, 14, 24, 0.9);
+  color: #e7ecff;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: rgba(124, 240, 255, 0.7);
+  box-shadow: 0 0 0 2px rgba(124, 240, 255, 0.2);
+}
+
 .button {
   padding: 0.75rem 1rem;
   border-radius: 0.5rem;
@@ -191,12 +219,49 @@ body {
   opacity: 1;
 }
 
+.error-text {
+  color: #ff9aa2;
+  font-weight: 600;
+}
+
 .status-line {
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
   margin-top: 1rem;
   font-size: 0.95rem;
+}
+
+.account-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.account-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: rgba(12, 18, 30, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.account-meta {
+  font-size: 0.85rem;
+  color: #a8b5e5;
+}
+
+.account-actions {
+  display: flex;
+  align-items: center;
 }
 
 .code-block {

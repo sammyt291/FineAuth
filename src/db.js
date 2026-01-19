@@ -112,6 +112,12 @@ export function listCharactersForAccount(db, accountId) {
     .all(accountId);
 }
 
+export function deleteAccount(db, accountId) {
+  db.prepare('DELETE FROM module_account_data WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM characters WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(accountId);
+}
+
 export function upsertModuleAccountData(db, accountId, moduleName, data) {
   const existing = db
     .prepare(

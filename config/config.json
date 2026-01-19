@@ -13,6 +13,16 @@
   },
   "esi": {
     "refreshIntervalMinutes": 10,
-    "characterNameCheckMinutes": 60
+    "characterNameCheckMinutes": 60,
+    "clientId": "",
+    "clientSecret": "",
+    "callbackUrl": "http://localhost:3000/callback",
+    "scopes": [
+      "publicData",
+      "esi-location.read_location.v1",
+      "esi-skills.read_skills.v1",
+      "esi-wallet.read_character_wallet.v1",
+      "esi-mail.read_mail.v1"
+    ]
   }
 }
