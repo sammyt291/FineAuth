@@ -14,6 +14,7 @@ const state = {
   loginError: null,
   esiStatus: null,
   charactersError: null,
+  charactersRefreshing: false,
   settingsModal: null
 };
 
@@ -102,6 +103,46 @@ function getEsiQueuePosition(taskId) {
 function getHomeLayout() {
   const homeModule = helpers.getModule('home');
   return homeModule?.settings?.panelLayout ?? 'vertical';
+}
+
+function normalizeCharacters(characters) {
+  if (!Array.isArray(characters)) {
+    return [];
+  }
+  return characters.map((character) => {
+    if (typeof character === 'string') {
+      return {
+        name: character,
+        characterId: null,
+        corporationId: null,
+        corporationName: null,
+        allianceId: null,
+        allianceName: null
+      };
+    }
+    return {
+      name: character?.name ?? '',
+      characterId: character?.characterId ?? null,
+      corporationId: character?.corporationId ?? null,
+      corporationName: character?.corporationName ?? null,
+      allianceId: character?.allianceId ?? null,
+      allianceName: character?.allianceName ?? null
+    };
+  });
+}
+
+function getCharacterPortraitUrl(characterId) {
+  if (!characterId) {
+    return null;
+  }
+  return `https://images.evetech.net/characters/${characterId}/portrait?size=128`;
+}
+
+function getCorporationLogoUrl(corporationId) {
+  if (!corporationId) {
+    return null;
+  }
+  return `https://images.evetech.net/corporations/${corporationId}/logo?size=64`;
 }
 
 function startQueueTicker() {
@@ -299,19 +340,57 @@ function createHomePanel(moduleData) {
   return card;
 }
 
-function createCharactersPanel(moduleData) {
-  const { card } = createPanelCard({
-    title: moduleData.homePanel?.title ?? 'Characters',
-    subtitle: moduleData.homePanel?.description
-  });
-
+function createCharacterList(characters, { compact = false } = {}) {
   const list = document.createElement('ul');
-  list.className = 'panel-list';
-  const characters = state.account?.characters ?? [];
-  if (characters.length) {
-    characters.forEach((name) => {
+  list.className = `panel-list character-list${compact ? ' compact' : ''}`;
+  const normalized = normalizeCharacters(characters);
+  if (normalized.length) {
+    normalized.forEach((character) => {
       const item = document.createElement('li');
-      item.textContent = name;
+      item.className = 'character-row';
+
+      const avatar = document.createElement('div');
+      avatar.className = 'character-avatar';
+      const portraitUrl = getCharacterPortraitUrl(character.characterId);
+      if (portraitUrl) {
+        const img = document.createElement('img');
+        img.src = portraitUrl;
+        img.alt = `${character.name} portrait`;
+        avatar.appendChild(img);
+      } else {
+        avatar.textContent = character.name.slice(0, 1).toUpperCase();
+      }
+
+      const info = document.createElement('div');
+      info.className = 'character-info';
+      const name = document.createElement('div');
+      name.className = 'character-name';
+      name.textContent = character.name;
+      info.appendChild(name);
+
+      const meta = document.createElement('div');
+      meta.className = 'character-meta';
+      const corpName = character.corporationName ?? 'Unknown corporation';
+      if (character.allianceName) {
+        meta.textContent = `${corpName} • ${character.allianceName}`;
+      } else {
+        meta.textContent = corpName;
+      }
+      info.appendChild(meta);
+
+      const corpLogo = document.createElement('div');
+      corpLogo.className = 'character-corp-logo';
+      const corpLogoUrl = getCorporationLogoUrl(character.corporationId);
+      if (corpLogoUrl) {
+        const corpImg = document.createElement('img');
+        corpImg.src = corpLogoUrl;
+        corpImg.alt = `${corpName} logo`;
+        corpLogo.appendChild(corpImg);
+      }
+
+      item.appendChild(avatar);
+      item.appendChild(info);
+      item.appendChild(corpLogo);
       list.appendChild(item);
     });
   } else {
@@ -320,6 +399,18 @@ function createCharactersPanel(moduleData) {
     empty.textContent = 'No characters linked yet.';
     list.appendChild(empty);
   }
+  return list;
+}
+
+function createCharactersPanel(moduleData) {
+  const { card } = createPanelCard({
+    title: moduleData.homePanel?.title ?? 'Characters',
+    subtitle: moduleData.homePanel?.description
+  });
+
+  const list = createCharacterList(state.account?.characters ?? [], {
+    compact: true
+  });
   card.appendChild(list);
 
   const actionRow = document.createElement('div');
@@ -428,7 +519,7 @@ function renderCharactersModule() {
   }
 
   const card = document.createElement('div');
-  card.className = 'card';
+  card.className = 'card characters-card';
   const title = document.createElement('h2');
   title.textContent = 'Characters';
   card.appendChild(title);
@@ -445,21 +536,7 @@ function renderCharactersModule() {
     card.appendChild(error);
   }
 
-  const list = document.createElement('ul');
-  list.className = 'panel-list';
-  const characters = state.account?.characters ?? [];
-  if (characters.length) {
-    characters.forEach((name) => {
-      const item = document.createElement('li');
-      item.textContent = name;
-      list.appendChild(item);
-    });
-  } else {
-    const empty = document.createElement('li');
-    empty.className = 'muted';
-    empty.textContent = 'No linked characters yet.';
-    list.appendChild(empty);
-  }
+  const list = createCharacterList(state.account?.characters ?? []);
   card.appendChild(list);
 
   const actionRow = document.createElement('div');
@@ -470,6 +547,15 @@ function renderCharactersModule() {
   addButton.textContent = 'Add character via ESI';
   addButton.addEventListener('click', handleAddCharacter);
   actionRow.appendChild(addButton);
+  const refreshButton = document.createElement('button');
+  refreshButton.className = 'button secondary';
+  refreshButton.type = 'button';
+  refreshButton.textContent = state.charactersRefreshing
+    ? 'Refreshing ESI details...'
+    : 'Refresh ESI details';
+  refreshButton.disabled = state.charactersRefreshing;
+  refreshButton.addEventListener('click', handleRefreshCharacters);
+  actionRow.appendChild(refreshButton);
   card.appendChild(actionRow);
 
   wrapper.appendChild(card);
@@ -752,6 +838,34 @@ function handleAddCharacter() {
       return;
     }
     renderHome();
+  });
+}
+
+function handleRefreshCharacters() {
+  if (!socket || !socket.connected) {
+    state.charactersError = 'Socket is not connected. Try again shortly.';
+    renderCharactersModule();
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.charactersError = null;
+  state.charactersRefreshing = true;
+  renderCharactersModule();
+  socket.emit('characters:refresh', { token }, (response) => {
+    state.charactersRefreshing = false;
+    if (response?.error) {
+      state.charactersError = response.error;
+    } else if (response?.characters) {
+      state.account = {
+        ...state.account,
+        characters: response.characters
+      };
+    }
+    if (window.location.hash === '#/module/characters') {
+      renderCharactersModule();
+    } else {
+      renderHome();
+    }
   });
 }
 

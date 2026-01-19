@@ -206,6 +206,72 @@ body {
   gap: 0.4rem;
 }
 
+.panel-list.character-list {
+  gap: 0.6rem;
+}
+
+.panel-list.character-list.compact {
+  gap: 0.5rem;
+}
+
+.panel-list.character-list .character-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(9, 12, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.panel-list.character-list.compact .character-row {
+  padding: 0.45rem 0.6rem;
+}
+
+.character-avatar,
+.character-corp-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 0.6rem;
+  background: rgba(124, 240, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c9d5ff;
+  font-weight: 700;
+  overflow: hidden;
+}
+
+.panel-list.character-list.compact .character-avatar,
+.panel-list.character-list.compact .character-corp-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.character-avatar img,
+.character-corp-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.character-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.character-name {
+  font-weight: 600;
+}
+
+.character-meta {
+  font-size: 0.75rem;
+  color: #9aa7d7;
+}
+
 .panel-list li {
   padding: 0.45rem 0.75rem;
   border-radius: 0.5rem;
@@ -271,6 +337,18 @@ body {
   border-radius: 1rem;
   padding: 2rem;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.characters-card {
+  padding: 1.5rem;
+}
+
+.characters-card h2 {
+  margin-top: 0;
+}
+
+.characters-card p {
+  margin-top: 0.5rem;
 }
 
 .centered {
