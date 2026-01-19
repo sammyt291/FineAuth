@@ -50,6 +50,75 @@ let esiStatus = {
 let server;
 let io;
 
+function logEvent(category, message, details = null) {
+  const timestamp = new Date().toISOString();
+  const detailPayload = details ? ` ${JSON.stringify(details)}` : '';
+  console.log(`[${timestamp}] [${category}] ${message}${detailPayload}`);
+}
+
+function headersToObject(headers) {
+  const output = {};
+  if (!headers) {
+    return output;
+  }
+  if (typeof headers.entries === 'function') {
+    for (const [key, value] of headers.entries()) {
+      output[key] = value;
+    }
+    return output;
+  }
+  if (Array.isArray(headers)) {
+    headers.forEach(([key, value]) => {
+      output[key] = value;
+    });
+    return output;
+  }
+  return { ...headers };
+}
+
+function redactHeaders(headers) {
+  const output = {};
+  Object.entries(headers ?? {}).forEach(([key, value]) => {
+    if (key.toLowerCase() === 'authorization') {
+      output[key] = '[redacted]';
+    } else {
+      output[key] = value;
+    }
+  });
+  return output;
+}
+
+async function fetchWithEsiLogging(url, options = {}) {
+  const method = options.method ?? 'GET';
+  const requestHeaders = redactHeaders(headersToObject(options.headers ?? {}));
+  logEvent('esi', 'Request', { url, method, headers: requestHeaders });
+  try {
+    const response = await fetch(url, options);
+    const responseHeaders = headersToObject(response.headers);
+    const logDetails = {
+      url,
+      method,
+      status: response.status,
+      ok: response.ok,
+      responseHeaders
+    };
+    if (response.ok) {
+      logEvent('esi', 'Response', logDetails);
+    } else {
+      logEvent('esi', 'Response error', logDetails);
+    }
+    return response;
+  } catch (error) {
+    logEvent('esi', 'Request failed', {
+      url,
+      method,
+      headers: requestHeaders,
+      error: error.message
+    });
+    throw error;
+  }
+}
+
 const permissionsManager = new PermissionsManager({
   permissionsPath: path.join(rootDir, 'config', 'permissions.json')
 });
@@ -133,6 +202,21 @@ function createServer() {
       });
     });
 
+    socket.on('session:logout', (payload, respond) => {
+      const token = payload?.token ?? null;
+      if (!token) {
+        respond?.({ ok: false, error: 'Missing session token.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (account) {
+        logEvent('auth', 'Logout', { accountName: account.name, accountId: account.id });
+      } else {
+        logEvent('auth', 'Logout attempt with invalid token', { tokenPresent: true });
+      }
+      respond?.({ ok: true });
+    });
+
     socket.on('esi:login', (payload, respond) => {
       if (!config.esi.clientId || !config.esi.clientSecret) {
         respond?.({ error: 'ESI SSO is not configured.' });
@@ -156,6 +240,10 @@ function createServer() {
           return;
         }
       }
+      logEvent('auth', 'ESI login requested', {
+        mode,
+        accountName: account?.name ?? null
+      });
       const state = cryptoRandom();
       esiLoginStates.set(state, {
         createdAt: Date.now(),
@@ -495,43 +583,61 @@ app.get('/callback', async (req, res) => {
     `${config.esi.clientId}:${config.esi.clientSecret}`
   ).toString('base64');
 
-  const task = queueUserEsiTask({
-    taskName:
-      loginState?.mode === 'add-character'
-        ? 'Add character: Authenticating'
-        : 'ESI login',
-    accountName: loginState?.accountName ?? null,
-    type: 'login'
-  });
-  try {
-    const tokenResponse = await fetch('https://login.eveonline.com/v2/oauth/token', {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${credentials}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Host: 'login.eveonline.com'
-      },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code
-      })
+    const task = queueUserEsiTask({
+      taskName:
+        loginState?.mode === 'add-character'
+          ? 'Add character: Authenticating'
+          : 'ESI login',
+      accountName: loginState?.accountName ?? null,
+      type: 'login'
     });
+    logEvent('auth', 'ESI login callback received', {
+      mode: loginState?.mode ?? 'primary',
+      accountName: loginState?.accountName ?? null
+    });
+  try {
+    const tokenResponse = await fetchWithEsiLogging(
+      'https://login.eveonline.com/v2/oauth/token',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${credentials}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Host: 'login.eveonline.com'
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code
+        })
+      }
+    );
 
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
+      logEvent('esi', 'Token exchange failed', {
+        status: tokenResponse.status,
+        response: errorText
+      });
       res.status(500).send(`Failed to exchange ESI code: ${errorText}`);
       return;
     }
 
     const tokenData = await tokenResponse.json();
-    const verifyResponse = await fetch('https://login.eveonline.com/oauth/verify', {
-      headers: {
-        Authorization: `Bearer ${tokenData.access_token}`
+    const verifyResponse = await fetchWithEsiLogging(
+      'https://login.eveonline.com/oauth/verify',
+      {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`
+        }
       }
-    });
+    );
 
     if (!verifyResponse.ok) {
       const errorText = await verifyResponse.text();
+      logEvent('esi', 'Token verify failed', {
+        status: verifyResponse.status,
+        response: errorText
+      });
       res.status(500).send(`Failed to verify ESI token: ${errorText}`);
       return;
     }
@@ -560,6 +666,12 @@ app.get('/callback', async (req, res) => {
         name: verifyData.CharacterName,
         characterId: verifyData.CharacterID,
         ...characterDetails
+      });
+      logEvent('account', 'Character added to account', {
+        accountId: account.id,
+        accountName: account.name,
+        characterName: verifyData.CharacterName,
+        characterId: verifyData.CharacterID
       });
       res.send(`
         <!doctype html>
@@ -594,6 +706,12 @@ app.get('/callback', async (req, res) => {
         characterId: verifyData.CharacterID,
         ...characterDetails
       });
+      logEvent('account', 'Account associated with character', {
+        accountId: existingAccount.id,
+        accountName: existingAccount.name,
+        characterName: verifyData.CharacterName,
+        characterId: verifyData.CharacterID
+      });
     } else {
       saveAccount({
         db,
@@ -611,8 +729,18 @@ app.get('/callback', async (req, res) => {
         moduleData: {},
         moduleAccountModifiers: moduleManager.getAccountModifiers()
       });
+      logEvent('account', 'Account registered', {
+        accountName: verifyData.CharacterName,
+        accountType: 'esi',
+        characterName: verifyData.CharacterName,
+        characterId: verifyData.CharacterID
+      });
     }
 
+    logEvent('auth', 'ESI login successful', {
+      accountName: verifyData.CharacterName,
+      characterId: verifyData.CharacterID
+    });
     res.send(`
       <!doctype html>
       <html>
@@ -665,7 +793,7 @@ async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
       return cached.value;
     }
   }
-  const response = await fetch(url);
+  const response = await fetchWithEsiLogging(url);
   if (!response.ok) {
     throw new Error(`ESI status error: ${response.status}`);
   }
@@ -750,6 +878,7 @@ function handleConsoleCommands() {
     if (!command) {
       return;
     }
+    logEvent('console', 'Command received', { command });
     const tokens = command.split(' ').filter(Boolean);
     const action = tokens[0]?.toLowerCase();
     const moduleName = tokens[1];

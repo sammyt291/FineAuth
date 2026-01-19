@@ -2,6 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 
+function logModuleEvent(action, details = null) {
+  const timestamp = new Date().toISOString();
+  const detailPayload = details ? ` ${JSON.stringify(details)}` : '';
+  console.log(`[${timestamp}] [module] ${action}${detailPayload}`);
+}
+
 export class ModuleManager {
   constructor({
     modulesPath,
@@ -149,6 +155,11 @@ export class ModuleManager {
     }
 
     this.modules.set(moduleData.name, moduleData);
+    logModuleEvent('Loaded module', {
+      name: moduleData.name,
+      displayName: moduleData.displayName,
+      source: moduleData.source
+    });
     this.notifyClients();
     return moduleData;
   }
@@ -171,6 +182,10 @@ export class ModuleManager {
       throw new Error(`Module not loaded: ${moduleName}`);
     }
     this.modules.delete(moduleName);
+    logModuleEvent('Unloaded module', {
+      name: moduleData.name,
+      source: moduleData.source
+    });
     if (moduleData.source?.type === 'zip') {
       const extractPath =
         moduleData.source.extractPath ??
@@ -184,6 +199,7 @@ export class ModuleManager {
 
   reloadModule(moduleName) {
     this.unloadModule(moduleName);
+    logModuleEvent('Reloading module', { name: moduleName });
     return this.loadModule(moduleName);
   }
 
