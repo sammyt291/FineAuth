@@ -24,7 +24,11 @@ const state = {
     expandedSettingGroups: new Set(['mail']),
     settingsOpen: false,
     loadingAccounts: false,
-    loadingSettings: false
+    loadingSettings: false,
+    loadingData: false,
+    data: null,
+    dataError: null,
+    lastDataRequestAt: null
   }
 };
 
@@ -683,12 +687,61 @@ function requestAdminSettings() {
   );
 }
 
+function requestAdminData() {
+  if (
+    !socket ||
+    !state.account?.isAdmin ||
+    state.admin.loadingData ||
+    !state.admin.selectedAccountId
+  ) {
+    return;
+  }
+  if (
+    state.admin.data?.accountId === state.admin.selectedAccountId &&
+    state.admin.data?.payload
+  ) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.admin.loadingData = true;
+  state.admin.dataError = null;
+  state.admin.lastDataRequestAt = Date.now();
+  socket.emit(
+    'admin:data:request',
+    { token, accountId: state.admin.selectedAccountId },
+    (response) => {
+      state.admin.loadingData = false;
+      if (response?.error) {
+        state.admin.data = null;
+        state.admin.dataError = response.error;
+      } else {
+        state.admin.data = {
+          accountId: response?.accountId ?? state.admin.selectedAccountId,
+          payload: response?.data ?? null
+        };
+        state.admin.dataError = null;
+      }
+      renderAdminModule();
+    }
+  );
+}
+
 function ensureAdminData() {
   if (!state.admin.accounts.length && !state.admin.loadingAccounts) {
     requestAdminAccounts();
   }
   if (!state.admin.settings && !state.admin.loadingSettings) {
     requestAdminSettings();
+  }
+  const shouldRefreshData =
+    state.admin.selectedAccountId &&
+    !state.admin.loadingData &&
+    (state.admin.data?.accountId !== state.admin.selectedAccountId ||
+      (!state.admin.data?.payload &&
+        (!state.admin.lastDataRequestAt ||
+          Date.now() - state.admin.lastDataRequestAt > 15000)));
+  if (shouldRefreshData) {
+    requestAdminData();
   }
 }
 
@@ -707,6 +760,38 @@ function getAdminFeatureDefinitions() {
     { key: 'skills', label: 'Skills & Training' },
     { key: 'history', label: 'ISK History' }
   ];
+}
+
+function getAdminPayload() {
+  return state.admin.data?.payload ?? null;
+}
+
+function getAdminCharacters() {
+  return getAdminPayload()?.characters ?? [];
+}
+
+function formatIsk(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'N/A';
+  }
+  return value.toLocaleString();
+}
+
+function getAdminMailItems() {
+  const items = [];
+  getAdminCharacters().forEach((character) => {
+    (character.mail ?? []).forEach((mail) => {
+      items.push({
+        ...mail,
+        characterName: character.name
+      });
+    });
+  });
+  return items.sort((a, b) => {
+    const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return bTime - aTime;
+  });
 }
 
 function ensureAdminSelection() {
@@ -905,6 +990,11 @@ function renderAdminModule() {
   }
   ensureAdminData();
   ensureAdminSelection();
+  const adminPayload = getAdminPayload();
+  const adminCharacters = getAdminCharacters();
+  const updatedAtLabel = adminPayload?.updatedAt
+    ? new Date(adminPayload.updatedAt).toLocaleString()
+    : 'No sync yet';
 
   const wrapper = document.createElement('div');
   wrapper.className = 'module-wrapper admin-module';
@@ -919,6 +1009,10 @@ function renderAdminModule() {
   headerText.textContent =
     'Select a main account and review mail, skills, and ISK data across the auth.';
   headerCard.appendChild(headerText);
+  const headerMeta = document.createElement('p');
+  headerMeta.className = 'muted';
+  headerMeta.textContent = `Last sync: ${updatedAtLabel}`;
+  headerCard.appendChild(headerMeta);
 
   const accountRow = document.createElement('div');
   accountRow.className = 'admin-account-row';
@@ -954,6 +1048,9 @@ function renderAdminModule() {
   accountSelect.addEventListener('change', (event) => {
     const nextId = Number(event.target.value);
     state.admin.selectedAccountId = Number.isNaN(nextId) ? null : nextId;
+    state.admin.data = null;
+    state.admin.dataError = null;
+    state.admin.lastDataRequestAt = null;
     renderAdminModule();
   });
   accountRow.appendChild(accountLabel);
@@ -1001,7 +1098,37 @@ function renderAdminModule() {
 
       const list = document.createElement('div');
       list.className = 'admin-empty-state';
-      list.textContent = 'No mail loaded for the selected account yet.';
+      if (state.admin.loadingData) {
+        list.textContent = 'Loading mail for the selected account...';
+      } else if (state.admin.dataError) {
+        list.textContent = `Unable to load mail data: ${state.admin.dataError}`;
+      } else if (!adminCharacters.length) {
+        list.textContent = 'No mail loaded for the selected account yet.';
+      } else {
+        const mailItems = getAdminMailItems().slice(0, 8);
+        if (!mailItems.length) {
+          list.textContent = 'No mail loaded for the selected account yet.';
+        } else {
+          list.innerHTML = '';
+          const mailList = document.createElement('ul');
+          mailList.className = 'panel-list';
+          mailItems.forEach((mail) => {
+            const entry = document.createElement('li');
+            const subject = mail.subject ?? 'Untitled mail';
+            const timestamp = mail.timestamp
+              ? new Date(mail.timestamp).toLocaleString()
+              : 'Unknown time';
+            entry.innerHTML = `
+              <div class="queue-row">
+                <span class="queue-name">${subject}</span>
+                <span class="queue-meta">${mail.characterName} • ${timestamp}</span>
+              </div>
+            `;
+            mailList.appendChild(entry);
+          });
+          list.appendChild(mailList);
+        }
+      }
       content.appendChild(list);
     }
 
@@ -1013,10 +1140,35 @@ function renderAdminModule() {
       skillsCard.appendChild(title);
       const skillsList = document.createElement('ul');
       skillsList.className = 'panel-list';
-      const emptySkill = document.createElement('li');
-      emptySkill.className = 'muted';
-      emptySkill.textContent = 'No skill data loaded for the selected account.';
-      skillsList.appendChild(emptySkill);
+      if (state.admin.loadingData) {
+        const loading = document.createElement('li');
+        loading.className = 'muted';
+        loading.textContent = 'Loading skill data...';
+        skillsList.appendChild(loading);
+      } else if (state.admin.dataError) {
+        const error = document.createElement('li');
+        error.className = 'muted';
+        error.textContent = `Unable to load skills: ${state.admin.dataError}`;
+        skillsList.appendChild(error);
+      } else if (!adminCharacters.length) {
+        const emptySkill = document.createElement('li');
+        emptySkill.className = 'muted';
+        emptySkill.textContent = 'No skill data loaded for the selected account.';
+        skillsList.appendChild(emptySkill);
+      } else {
+        adminCharacters.forEach((character) => {
+          const entry = document.createElement('li');
+          const totalSp = character.skills?.total_sp ?? null;
+          const skillCount = character.skills?.skills?.length ?? 0;
+          entry.innerHTML = `
+            <div class="queue-row">
+              <span class="queue-name">${character.name}</span>
+              <span class="queue-meta">${formatIsk(totalSp)} SP • ${skillCount} skills</span>
+            </div>
+          `;
+          skillsList.appendChild(entry);
+        });
+      }
       skillsCard.appendChild(skillsList);
       content.appendChild(skillsCard);
 
@@ -1027,10 +1179,42 @@ function renderAdminModule() {
       queueCard.appendChild(queueTitle);
       const queueList = document.createElement('ul');
       queueList.className = 'panel-list';
-      const emptyQueue = document.createElement('li');
-      emptyQueue.className = 'muted';
-      emptyQueue.textContent = 'No active training queue entries.';
-      queueList.appendChild(emptyQueue);
+      const queueItems = adminCharacters.flatMap((character) =>
+        (character.trainingQueue ?? []).map((entry) => ({
+          ...entry,
+          characterName: character.name
+        }))
+      );
+      if (state.admin.loadingData) {
+        const loadingQueue = document.createElement('li');
+        loadingQueue.className = 'muted';
+        loadingQueue.textContent = 'Loading training queue...';
+        queueList.appendChild(loadingQueue);
+      } else if (state.admin.dataError) {
+        const errorQueue = document.createElement('li');
+        errorQueue.className = 'muted';
+        errorQueue.textContent = `Unable to load training queue: ${state.admin.dataError}`;
+        queueList.appendChild(errorQueue);
+      } else if (!queueItems.length) {
+        const emptyQueue = document.createElement('li');
+        emptyQueue.className = 'muted';
+        emptyQueue.textContent = 'No active training queue entries.';
+        queueList.appendChild(emptyQueue);
+      } else {
+        queueItems.forEach((entry) => {
+          const item = document.createElement('li');
+          const finishTime = entry.finish_date
+            ? new Date(entry.finish_date).toLocaleString()
+            : 'Unknown';
+          item.innerHTML = `
+            <div class="queue-row">
+              <span class="queue-name">${entry.skill_id ?? 'Skill'} (${entry.characterName})</span>
+              <span class="queue-meta">Finishes ${finishTime}</span>
+            </div>
+          `;
+          queueList.appendChild(item);
+        });
+      }
       queueCard.appendChild(queueList);
       content.appendChild(queueCard);
 
@@ -1041,7 +1225,19 @@ function renderAdminModule() {
       walletCard.appendChild(walletTitle);
       const walletValue = document.createElement('p');
       walletValue.className = 'muted';
-      walletValue.textContent = 'ISK totals will appear once wallet data syncs.';
+      if (state.admin.loadingData) {
+        walletValue.textContent = 'Loading wallet data...';
+      } else if (state.admin.dataError) {
+        walletValue.textContent = `Unable to load wallet data: ${state.admin.dataError}`;
+      } else if (!adminCharacters.length) {
+        walletValue.textContent = 'ISK totals will appear once wallet data syncs.';
+      } else {
+        const totalBalance = adminCharacters.reduce((sum, character) => {
+          const balance = character.wallet;
+          return typeof balance === 'number' ? sum + balance : sum;
+        }, 0);
+        walletValue.textContent = `Total balance: ${formatIsk(totalBalance)} ISK`;
+      }
       walletCard.appendChild(walletValue);
       content.appendChild(walletCard);
     }
@@ -1054,8 +1250,11 @@ function renderAdminModule() {
       historyCard.appendChild(title);
       const summaryText = document.createElement('p');
       summaryText.className = 'muted';
-      summaryText.textContent =
-        'No ISK history data available yet for the selected account.';
+      summaryText.textContent = state.admin.loadingData
+        ? 'Loading ISK history...'
+        : state.admin.dataError
+          ? `Unable to load ISK history: ${state.admin.dataError}`
+          : 'No ISK history data available yet for the selected account.';
       historyCard.appendChild(summaryText);
       content.appendChild(historyCard);
     }
