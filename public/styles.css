@@ -406,6 +406,50 @@ body {
   margin-top: 0.75rem;
 }
 
+.multi-select-button {
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #0b0f1a;
+  background: #ff6b6b;
+}
+
+.multi-select-button.is-selected {
+  background: #61d98b;
+}
+
+.admin-mail-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.admin-mail-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.admin-mail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.admin-mail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-mail-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .admin-mail-subject {
   background: none;
   border: none;
