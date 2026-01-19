@@ -1,0 +1,6 @@
+{
+  "name": "example",
+  "displayName": "Module Example",
+  "description": "Full module template with visuals, text, and code.",
+  "mainPage": "index.html"
+}

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FineAuth Module Example</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background: #0d111b;
+        color: #e8ecff;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: radial-gradient(circle at top, #1e2640, #0d111b 70%);
+      }
+
+      .hero {
+        padding: 2rem;
+        border-radius: 1.25rem;
+        background: linear-gradient(135deg, rgba(79, 230, 255, 0.2), rgba(107, 99, 255, 0.2));
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+        margin-bottom: 2rem;
+      }
+
+      .hero h1 {
+        margin: 0 0 0.75rem;
+        font-size: 2.2rem;
+      }
+
+      .hero p {
+        margin: 0 0 1.5rem;
+        color: #c6d2ff;
+        max-width: 680px;
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
+
+      .button {
+        border: none;
+        border-radius: 999px;
+        padding: 0.65rem 1.4rem;
+        font-weight: 600;
+        color: #0d111b;
+        background: linear-gradient(135deg, #4fe6ff, #6b63ff);
+        cursor: pointer;
+      }
+
+      .button.secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e8ecff;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+      }
+
+      .grid {
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        margin-bottom: 2rem;
+      }
+
+      .card {
+        background: rgba(16, 22, 36, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 1.5rem;
+      }
+
+      .card h3 {
+        margin-top: 0;
+      }
+
+      .code-block {
+        background: #0b0f1a;
+        border-radius: 0.75rem;
+        padding: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        overflow-x: auto;
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 0.9rem;
+        color: #b5c6ff;
+      }
+
+      .highlight {
+        color: #7cf0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <h1>Module Example: Visuals, Text, &amp; Code</h1>
+      <p>
+        This module demonstrates a complete package: a visual hero section, supporting
+        text blocks, and code snippets that show how to structure a module in FineAuth.
+      </p>
+      <div class="button-row">
+        <button class="button" type="button" data-action="home">Open Home Module</button>
+        <button class="button secondary" type="button" data-action="navigation">
+          View Navigation Demo
+        </button>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h3>Visual Pattern</h3>
+        <p>
+          Use gradients, cards, and spacing helpers to match the default FineAuth
+          aesthetic. Keep contrast high and corners rounded for consistency.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Text Guidance</h3>
+        <p>
+          Provide concise instructions so members know what to do next. Link back to
+          built-in modules, like <span class="highlight">Home</span> or
+          <span class="highlight">Navigation</span>.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Interactive Example</h3>
+        <p>
+          Modules can send users to the parent shell using
+          <code class="highlight">window.parent.location.hash</code>. Try the buttons
+          above to jump to another module.
+        </p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Code Example</h3>
+      <p>Minimal module manifest + iframe-friendly markup:</p>
+      <pre class="code-block"><code>{
+  "name": "my-module",
+  "displayName": "My Module",
+  "description": "Custom module example",
+  "mainPage": "index.html"
+}
+
+&lt;script&gt;
+  document.querySelector('[data-action="home"]').addEventListener('click', () =&gt; {
+    window.parent.location.hash = '#/module/home';
+  });
+&lt;/script&gt;</code></pre>
+    </section>
+
+    <script>
+      document.querySelectorAll('[data-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button.dataset.action;
+          if (target) {
+            window.parent.location.hash = `#/module/${target}`;
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

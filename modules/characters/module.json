@@ -1,0 +1,29 @@
+{
+  "name": "characters",
+  "displayName": "Characters",
+  "description": "Link additional ESI characters and review linked pilots.",
+  "mainPage": "characters",
+  "homePanel": {
+    "title": "Characters",
+    "description": "Manage linked pilots and add new ESI logins.",
+    "position": 1
+  },
+  "adminSettings": {
+    "title": "Characters Permissions",
+    "fields": [
+      {
+        "id": "allowAllMembers",
+        "label": "Allow all members to add characters",
+        "type": "toggle",
+        "default": true,
+        "help": "Disable to restrict add-character access to admins or members granted the characters.add permission."
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "name": "characters.add",
+      "description": "Allow members to add additional characters."
+    }
+  ]
+}

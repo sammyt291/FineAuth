@@ -2,5 +2,17 @@
   "name": "home",
   "displayName": "Home",
   "description": "Primary dashboard and helpers",
-  "mainPage": "home"
+  "mainPage": "home",
+  "adminSettings": {
+    "title": "Home Layout",
+    "fields": [
+      {
+        "id": "panelLayout",
+        "label": "Homepage panel layout",
+        "type": "select",
+        "options": ["vertical", "horizontal"],
+        "default": "vertical"
+      }
+    ]
+  }
 }

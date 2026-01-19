@@ -112,6 +112,29 @@ export function listCharactersForAccount(db, accountId) {
     .all(accountId);
 }
 
+export function getAccountById(db, accountId) {
+  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
+}
+
+export function addCharacterToAccount(db, accountId, characterName) {
+  if (!accountId || !characterName) {
+    return { added: false };
+  }
+  const existing = db
+    .prepare(
+      'SELECT id FROM characters WHERE account_id = ? AND name = ? COLLATE NOCASE'
+    )
+    .get(accountId, characterName);
+  if (existing) {
+    return { added: false, existingId: existing.id };
+  }
+  const createdAt = new Date().toISOString();
+  const result = db
+    .prepare('INSERT INTO characters (account_id, name, created_at) VALUES (?, ?, ?)')
+    .run(accountId, characterName, createdAt);
+  return { added: true, characterId: result.lastInsertRowid };
+}
+
 export function deleteAccount(db, accountId) {
   db.prepare('DELETE FROM module_account_data WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM characters WHERE account_id = ?').run(accountId);
