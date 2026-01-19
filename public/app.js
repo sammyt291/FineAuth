@@ -28,7 +28,7 @@ const state = {
     loadingData: false,
     data: null,
     dataError: null,
-    lastDataRequestAt: null,
+    lastDataRequestAt: {},
     mailSearchTitle: '',
     mailSearchContent: '',
     mailPage: 1,
@@ -97,6 +97,54 @@ const helpers = {
     return 'Unknown';
   }
 };
+
+const durationUnits = [
+  { key: 'mo', label: 'mo', seconds: 30 * 24 * 60 * 60 },
+  { key: 'w', label: 'w', seconds: 7 * 24 * 60 * 60 },
+  { key: 'd', label: 'd', seconds: 24 * 60 * 60 },
+  { key: 'h', label: 'h', seconds: 60 * 60 },
+  { key: 'm', label: 'm', seconds: 60 },
+  { key: 's', label: 's', seconds: 1 }
+];
+
+function parseDurationInput(value) {
+  const input = String(value ?? '').toLowerCase();
+  const regex = /(\d+)\s*(mo|w|d|h|m|s)/g;
+  const seen = new Set();
+  const parts = {};
+  let totalSeconds = 0;
+  let match = regex.exec(input);
+  while (match) {
+    const amount = Number.parseInt(match[1], 10);
+    const unit = match[2];
+    if (!Number.isNaN(amount) && !seen.has(unit)) {
+      const unitDef = durationUnits.find((entry) => entry.key === unit);
+      if (unitDef) {
+        parts[unit] = amount;
+        totalSeconds += amount * unitDef.seconds;
+        seen.add(unit);
+      }
+    }
+    match = regex.exec(input);
+  }
+  return { totalSeconds, parts };
+}
+
+function formatDurationParts(parts) {
+  const labels = durationUnits
+    .map((unit) => {
+      const amount = parts[unit.key];
+      return amount ? `${amount}${unit.label}` : null;
+    })
+    .filter(Boolean);
+  return labels.length ? labels.join(' ') : '0s';
+}
+
+function getDurationSummary(value) {
+  const parsed = parseDurationInput(value);
+  const partsLabel = formatDurationParts(parsed.parts);
+  return `Detected total: ${partsLabel}`;
+}
 
 function getDefaultModule() {
   if (!state.account) {
@@ -709,7 +757,62 @@ function requestAdminSettings() {
   );
 }
 
-function requestAdminData() {
+function getAdminSettingDefault(fieldId) {
+  const fields = state.admin.settings?.adminSettings?.fields ?? [];
+  const field = fields.find((entry) => entry.id === fieldId);
+  return field?.default;
+}
+
+function getAdminSettingValue(fieldId) {
+  return (
+    state.admin.settings?.settings?.[fieldId] ??
+    getAdminSettingDefault(fieldId) ??
+    ''
+  );
+}
+
+function getAdminDataCooldownMs(type) {
+  const fieldMap = {
+    mail: 'mailDataCooldown',
+    skills: 'skillsDataCooldown',
+    history: 'historyDataCooldown'
+  };
+  const fieldId = fieldMap[type];
+  const value = fieldId ? getAdminSettingValue(fieldId) : '';
+  const parsed = parseDurationInput(value);
+  const fallbackSeconds = 15;
+  const totalSeconds = parsed.totalSeconds || fallbackSeconds;
+  return totalSeconds * 1000;
+}
+
+function getAdminAutoCooldownMs() {
+  const cooldowns = ['mail', 'skills', 'history'].map(getAdminDataCooldownMs);
+  return Math.min(...cooldowns);
+}
+
+function getAdminCooldownRemainingMs(type) {
+  const cooldownMs =
+    type === 'auto' ? getAdminAutoCooldownMs() : getAdminDataCooldownMs(type);
+  const lastAt = state.admin.lastDataRequestAt?.[type];
+  if (!lastAt) {
+    return 0;
+  }
+  const remaining = cooldownMs - (Date.now() - lastAt);
+  return Math.max(0, remaining);
+}
+
+function updateAdminDataRequestTimestamps() {
+  const timestamp = Date.now();
+  state.admin.lastDataRequestAt = {
+    ...state.admin.lastDataRequestAt,
+    auto: timestamp,
+    mail: timestamp,
+    skills: timestamp,
+    history: timestamp
+  };
+}
+
+function requestAdminData({ type = 'auto', force = false } = {}) {
   if (
     !socket ||
     !state.account?.isAdmin ||
@@ -718,16 +821,21 @@ function requestAdminData() {
   ) {
     return;
   }
+  const remainingCooldownMs = getAdminCooldownRemainingMs(type);
+  if (remainingCooldownMs > 0) {
+    return;
+  }
   if (
     state.admin.data?.accountId === state.admin.selectedAccountId &&
-    state.admin.data?.payload
+    state.admin.data?.payload &&
+    !force
   ) {
     return;
   }
   const token = localStorage.getItem('fineauth_token');
   state.admin.loadingData = true;
   state.admin.dataError = null;
-  state.admin.lastDataRequestAt = Date.now();
+  updateAdminDataRequestTimestamps();
   socket.emit(
     'admin:data:request',
     { token, accountId: state.admin.selectedAccountId },
@@ -755,15 +863,15 @@ function ensureAdminData() {
   if (!state.admin.settings && !state.admin.loadingSettings) {
     requestAdminSettings();
   }
+  const cooldownRemainingMs = getAdminCooldownRemainingMs('auto');
   const shouldRefreshData =
     state.admin.selectedAccountId &&
     !state.admin.loadingData &&
     (state.admin.data?.accountId !== state.admin.selectedAccountId ||
       (!state.admin.data?.payload &&
-        (!state.admin.lastDataRequestAt ||
-          Date.now() - state.admin.lastDataRequestAt > 15000)));
+        cooldownRemainingMs === 0));
   if (shouldRefreshData) {
-    requestAdminData();
+    requestAdminData({ type: 'auto' });
   }
 }
 
@@ -782,6 +890,30 @@ function getAdminFeatureDefinitions() {
     { key: 'skills', label: 'Skills & Training' },
     { key: 'history', label: 'ISK History' }
   ];
+}
+
+function createAdminDataActionRow({ type, label }) {
+  const row = document.createElement('div');
+  row.className = 'admin-data-actions';
+  const button = document.createElement('button');
+  button.className = 'button secondary';
+  button.type = 'button';
+  button.textContent = label;
+  const remainingMs = getAdminCooldownRemainingMs(type);
+  button.disabled = state.admin.loadingData || remainingMs > 0;
+  button.addEventListener('click', () => {
+    requestAdminData({ type, force: true });
+  });
+  row.appendChild(button);
+  if (remainingMs > 0) {
+    const cooldown = document.createElement('span');
+    cooldown.className = 'admin-data-cooldown';
+    cooldown.textContent = `Cooldown: ${helpers.formatDuration(
+      Math.ceil(remainingMs / 1000)
+    )}`;
+    row.appendChild(cooldown);
+  }
+  return row;
 }
 
 function getAdminPayload() {
@@ -1009,6 +1141,11 @@ function renderAdminSettingsPanel(wrapper) {
         input.type = 'number';
         input.value =
           state.admin.settings?.settings?.[field.id] ?? field.default ?? '';
+      } else if (field.type === 'duration') {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.value =
+          state.admin.settings?.settings?.[field.id] ?? field.default ?? '';
       } else {
         input = document.createElement('input');
         input.type = 'text';
@@ -1017,6 +1154,15 @@ function renderAdminSettingsPanel(wrapper) {
       }
       input.dataset.fieldId = field.id;
       input.dataset.fieldType = field.type ?? 'text';
+      if (field.type === 'duration') {
+        const summary = document.createElement('p');
+        summary.className = 'duration-summary';
+        summary.textContent = getDurationSummary(input.value);
+        input.addEventListener('input', () => {
+          summary.textContent = getDurationSummary(input.value);
+        });
+        row.appendChild(summary);
+      }
       row.appendChild(input);
 
       if (field.help) {
@@ -1144,7 +1290,7 @@ function renderAdminModule() {
     state.admin.selectedAccountId = Number.isNaN(nextId) ? null : nextId;
     state.admin.data = null;
     state.admin.dataError = null;
-    state.admin.lastDataRequestAt = null;
+    state.admin.lastDataRequestAt = {};
     state.admin.mailSelectedId = null;
     state.admin.mailPage = 1;
     renderAdminModule();
@@ -1180,6 +1326,9 @@ function renderAdminModule() {
     content.className = 'admin-feature-content';
 
     if (feature.key === 'mail') {
+      content.appendChild(
+        createAdminDataActionRow({ type: 'mail', label: 'Refresh mail data' })
+      );
       const searchRow = document.createElement('div');
       searchRow.className = 'admin-search-row';
       const titleInput = document.createElement('input');
@@ -1220,7 +1369,7 @@ function renderAdminModule() {
           list.innerHTML = '';
           const mailList = document.createElement('ul');
           mailList.className = 'panel-list';
-          const pageSize = 8;
+          const pageSize = 10;
           const { totalPages, currentPage } = getMailPagination(
             mailItems.length,
             pageSize
@@ -1323,6 +1472,12 @@ function renderAdminModule() {
     }
 
     if (feature.key === 'skills') {
+      content.appendChild(
+        createAdminDataActionRow({
+          type: 'skills',
+          label: 'Refresh skills data'
+        })
+      );
       const skillsCard = document.createElement('div');
       skillsCard.className = 'card';
       const title = document.createElement('h4');
@@ -1451,6 +1606,12 @@ function renderAdminModule() {
     }
 
     if (feature.key === 'history') {
+      content.appendChild(
+        createAdminDataActionRow({
+          type: 'history',
+          label: 'Refresh ISK history'
+        })
+      );
       const walletCard = document.createElement('div');
       walletCard.className = 'card';
       const walletTitle = document.createElement('h4');
@@ -1777,6 +1938,10 @@ function renderSettingsModal() {
       input = document.createElement('input');
       input.type = 'number';
       input.value = state.settingsModal.settings?.[field.id] ?? field.default ?? '';
+    } else if (field.type === 'duration') {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = state.settingsModal.settings?.[field.id] ?? field.default ?? '';
     } else {
       input = document.createElement('input');
       input.type = 'text';
@@ -1784,6 +1949,15 @@ function renderSettingsModal() {
     }
     input.dataset.fieldId = field.id;
     input.dataset.fieldType = field.type ?? 'text';
+    if (field.type === 'duration') {
+      const summary = document.createElement('p');
+      summary.className = 'duration-summary';
+      summary.textContent = getDurationSummary(input.value);
+      input.addEventListener('input', () => {
+        summary.textContent = getDurationSummary(input.value);
+      });
+      row.appendChild(summary);
+    }
     row.appendChild(input);
 
     if (field.help) {
