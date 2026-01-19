@@ -1,0 +1,68 @@
+{
+  "name": "admin",
+  "displayName": "Admin",
+  "description": "Admin overview for mail, skills, and wallet monitoring.",
+  "mainPage": "admin",
+  "config": {
+    "adminOnly": true
+  },
+  "adminSettings": {
+    "title": "Admin Module Settings",
+    "fields": [
+      {
+        "id": "mailRefreshMinutes",
+        "label": "Mail refresh interval (minutes)",
+        "type": "select",
+        "options": ["5", "15", "30", "60"],
+        "default": "15",
+        "help": "Applies to all characters in the auth.",
+        "feature": "mail"
+      },
+      {
+        "id": "mailMaxResults",
+        "label": "Mail results per page",
+        "type": "select",
+        "options": ["25", "50", "100"],
+        "default": "50",
+        "help": "Limit the number of mail entries displayed.",
+        "feature": "mail"
+      },
+      {
+        "id": "skillsRefreshMinutes",
+        "label": "Skills refresh interval (minutes)",
+        "type": "select",
+        "options": ["15", "30", "60", "240"],
+        "default": "30",
+        "help": "Applies to all characters in the auth.",
+        "feature": "skills"
+      },
+      {
+        "id": "trainingQueueRefreshMinutes",
+        "label": "Training queue refresh interval (minutes)",
+        "type": "select",
+        "options": ["15", "30", "60", "240"],
+        "default": "60",
+        "help": "Applies to all characters in the auth.",
+        "feature": "skills"
+      },
+      {
+        "id": "walletRefreshMinutes",
+        "label": "Wallet snapshot refresh interval (minutes)",
+        "type": "select",
+        "options": ["5", "15", "30", "60"],
+        "default": "15",
+        "help": "Applies to all characters in the auth.",
+        "feature": "skills"
+      },
+      {
+        "id": "walletHistoryDays",
+        "label": "ISK history window (days)",
+        "type": "select",
+        "options": ["7", "30", "90"],
+        "default": "30",
+        "help": "Controls how far back ISK history summaries display.",
+        "feature": "history"
+      }
+    ]
+  }
+}

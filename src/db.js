@@ -137,7 +137,7 @@ export function getAccountByToken(db, accessToken) {
 }
 
 export function listAccounts(db) {
-  return db.prepare('SELECT * FROM accounts ORDER BY created_at DESC').all();
+  return db.prepare('SELECT * FROM accounts ORDER BY created_at ASC').all();
 }
 
 export function listCharactersForAccount(db, accountId) {
@@ -156,7 +156,7 @@ export function getAccountByName(db, accountName) {
   }
   return db
     .prepare(
-      'SELECT * FROM accounts WHERE name = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT 1'
+      'SELECT * FROM accounts WHERE name = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1'
     )
     .get(accountName);
 }
@@ -171,7 +171,7 @@ export function getAccountByCharacterName(db, characterName) {
        FROM accounts
        JOIN characters ON characters.account_id = accounts.id
        WHERE characters.name = ? COLLATE NOCASE
-       ORDER BY accounts.created_at DESC
+       ORDER BY accounts.created_at ASC
        LIMIT 1`
     )
     .get(characterName);
