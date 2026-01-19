@@ -1,11 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
+import { logEvent } from './logger.js';
 
 function logModuleEvent(action, details = null) {
-  const timestamp = new Date().toISOString();
-  const detailPayload = details ? ` ${JSON.stringify(details)}` : '';
-  console.log(`[${timestamp}] [module] ${action}${detailPayload}`);
+  logEvent('module', action, details);
 }
 
 export class ModuleManager {
