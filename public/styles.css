@@ -398,6 +398,110 @@ body {
   font-size: 0.95rem;
 }
 
+.admin-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.admin-mail-subject {
+  background: none;
+  border: none;
+  color: #e7ecff;
+  font-weight: 600;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.admin-mail-subject:hover {
+  color: #7cf0ff;
+}
+
+.admin-mail-detail {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: rgba(12, 18, 32, 0.6);
+  display: grid;
+  gap: 0.5rem;
+}
+
+.admin-mail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: #9aa7d7;
+}
+
+.admin-mail-body {
+  font-size: 0.9rem;
+  color: #d6e0ff;
+  white-space: pre-wrap;
+}
+
+.admin-skill-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-skill-card {
+  padding: 0.75rem 1rem;
+}
+
+.admin-skill-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 600;
+  color: #e7ecff;
+}
+
+.admin-skill-summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-queue-progress {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 0.4rem 0 0.2rem;
+}
+
+.admin-queue-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #5dd6ff, #7cf0ff);
+  border-radius: 999px;
+}
+
+.admin-history-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-history-card {
+  padding: 0.5rem 0.75rem;
+  background: rgba(12, 18, 32, 0.6);
+  border-radius: 0.5rem;
+}
+
+.admin-history-card summary {
+  list-style: none;
+  cursor: pointer;
+  font-weight: 600;
+  color: #e7ecff;
+}
+
+.admin-history-card summary::-webkit-details-marker {
+  display: none;
+}
+
 .admin-settings-tab {
   position: fixed;
   right: 0;
