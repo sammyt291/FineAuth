@@ -9,7 +9,9 @@ import {
   openDatabase,
   saveAccount,
   getAccountByToken,
+  listAccounts,
   listCharactersForAccount,
+  deleteAccount,
   upsertModuleAccountData
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
@@ -28,6 +30,7 @@ app.use(express.static(path.join(rootDir, 'public')));
 const db = openDatabase(path.join(rootDir, 'data.sqlite'));
 
 const esiQueue = [];
+const esiLoginStates = new Map();
 
 const builtInModules = [
   {
@@ -41,6 +44,12 @@ const builtInModules = [
     displayName: 'Home',
     description: 'Primary dashboard and helpers',
     mainPage: 'home'
+  },
+  {
+    name: 'accounts',
+    displayName: 'Account Management',
+    description: 'Manage FineAuth accounts and access',
+    mainPage: 'accounts'
   },
   {
     name: 'navigation',
@@ -173,19 +182,27 @@ function parseToken(req) {
   return token ?? null;
 }
 
+function requireAccount(req, res) {
+  const token = parseToken(req);
+  if (!token) {
+    res.status(401).json({ error: 'Missing token' });
+    return null;
+  }
+  const account = getAccountByToken(db, token);
+  if (!account) {
+    res.status(401).json({ error: 'Invalid token' });
+    return null;
+  }
+  return account;
+}
+
 app.get('/api/modules', (req, res) => {
   res.json({ modules: moduleManager.listModules() });
 });
 
 app.get('/api/session', (req, res) => {
-  const token = parseToken(req);
-  if (!token) {
-    res.status(401).json({ error: 'Missing token' });
-    return;
-  }
-  const account = getAccountByToken(db, token);
+  const account = requireAccount(req, res);
   if (!account) {
-    res.status(401).json({ error: 'Invalid token' });
     return;
   }
   const characters = listCharactersForAccount(db, account.id).map(
@@ -217,7 +234,7 @@ app.post('/api/login/admin', (req, res) => {
   const accessToken = cryptoRandom();
   const { accountId } = saveAccount({
     db,
-    type: 'admin',
+    type: 'static',
     name: username,
     accessToken,
     refreshToken: null,
@@ -228,36 +245,145 @@ app.post('/api/login/admin', (req, res) => {
   res.json({ token: accessToken, accountId });
 });
 
-app.post('/api/login/esi', (req, res) => {
-  const { mainCharacterName } = req.body;
-  if (!mainCharacterName) {
-    res.status(400).json({ error: 'Main character name required' });
+app.get('/api/esi/login', (req, res) => {
+  if (!config.esi.clientId || !config.esi.clientSecret) {
+    res.status(500).send('ESI SSO is not configured.');
     return;
   }
-  const accessToken = cryptoRandom();
-  const refreshToken = cryptoRandom();
-  const { accountId } = saveAccount({
-    db,
-    type: 'esi',
-    name: mainCharacterName,
-    accessToken,
-    refreshToken,
-    characterNames: [mainCharacterName],
-    moduleData: {},
-    moduleAccountModifiers: moduleManager.getAccountModifiers()
-  });
-  res.json({ token: accessToken, accountId });
+  const state = cryptoRandom();
+  esiLoginStates.set(state, Date.now());
+  const scope = Array.isArray(config.esi.scopes) ? config.esi.scopes.join(' ') : '';
+  const authorizeUrl = new URL('https://login.eveonline.com/v2/oauth/authorize');
+  authorizeUrl.searchParams.set('response_type', 'code');
+  authorizeUrl.searchParams.set('redirect_uri', config.esi.callbackUrl);
+  authorizeUrl.searchParams.set('client_id', config.esi.clientId);
+  authorizeUrl.searchParams.set('scope', scope);
+  authorizeUrl.searchParams.set('state', state);
+  res.redirect(authorizeUrl.toString());
+});
+
+app.get('/callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (!code || !state || !esiLoginStates.has(state)) {
+    res.status(400).send('Invalid ESI callback.');
+    return;
+  }
+  esiLoginStates.delete(state);
+
+  const credentials = Buffer.from(
+    `${config.esi.clientId}:${config.esi.clientSecret}`
+  ).toString('base64');
+
+  try {
+    const tokenResponse = await fetch('https://login.eveonline.com/v2/oauth/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Host: 'login.eveonline.com'
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code
+      })
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      res.status(500).send(`Failed to exchange ESI code: ${errorText}`);
+      return;
+    }
+
+    const tokenData = await tokenResponse.json();
+    const verifyResponse = await fetch('https://login.eveonline.com/oauth/verify', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`
+      }
+    });
+
+    if (!verifyResponse.ok) {
+      const errorText = await verifyResponse.text();
+      res.status(500).send(`Failed to verify ESI token: ${errorText}`);
+      return;
+    }
+
+    const verifyData = await verifyResponse.json();
+    const accessToken = cryptoRandom();
+    saveAccount({
+      db,
+      type: 'esi',
+      name: verifyData.CharacterName,
+      accessToken,
+      refreshToken: tokenData.refresh_token,
+      characterNames: [verifyData.CharacterName],
+      moduleData: {},
+      moduleAccountModifiers: moduleManager.getAccountModifiers()
+    });
+
+    res.send(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>FineAuth ESI Login</title>
+        </head>
+        <body>
+          <script>
+            localStorage.setItem('fineauth_token', ${JSON.stringify(accessToken)});
+            window.location.href = '/#/module/home';
+          </script>
+          <p>Signing you in...</p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    res.status(500).send(`ESI login failed: ${error.message}`);
+  }
+});
+
+app.get('/api/accounts', (req, res) => {
+  const account = requireAccount(req, res);
+  if (!account) {
+    return;
+  }
+  if (account.type !== 'static') {
+    res.status(403).json({ error: 'Not authorized' });
+    return;
+  }
+  const accounts = listAccounts(db).map((item) => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    createdAt: item.created_at
+  }));
+  res.json({ accounts });
+});
+
+app.delete('/api/accounts/:id', (req, res) => {
+  const account = requireAccount(req, res);
+  if (!account) {
+    return;
+  }
+  if (account.type !== 'static') {
+    res.status(403).json({ error: 'Not authorized' });
+    return;
+  }
+  const targetId = Number(req.params.id);
+  if (!Number.isFinite(targetId)) {
+    res.status(400).json({ error: 'Invalid account id' });
+    return;
+  }
+  if (targetId === account.id) {
+    res.status(403).json({ error: 'Cannot delete your own account' });
+    return;
+  }
+  deleteAccount(db, targetId);
+  res.json({ status: 'ok' });
 });
 
 app.post('/api/modules/:name/account-data', (req, res) => {
-  const token = parseToken(req);
-  if (!token) {
-    res.status(401).json({ error: 'Missing token' });
-    return;
-  }
-  const account = getAccountByToken(db, token);
+  const account = requireAccount(req, res);
   if (!account) {
-    res.status(401).json({ error: 'Invalid token' });
     return;
   }
   const moduleName = req.params.name;
