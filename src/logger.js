@@ -36,9 +36,15 @@ function colorizeTag(text, color) {
 function formatConsoleEntry({ timestamp, category, message, details }) {
   const timeTag = colorizeTag(`[${timestamp}]`, ANSI.cyan);
   const categoryTag = colorizeTag(`[${category}]`, ANSI.magenta);
-  const messageText = `${ANSI.white}${message}${ANSI.reset}`;
-  const detailText = details ? `${ANSI.white}${serializeDetails(details)}${ANSI.reset}` : '';
-  return `${timeTag} ${categoryTag} ${messageText}${detailText}`;
+  const actor =
+    details?.accountName ??
+    details?.characterName ??
+    details?.accountId ??
+    details?.mode ??
+    'Auto';
+  const actionLabel = details?.taskName ? `Running ${details.taskName}` : message;
+  const messageText = `${ANSI.white}${actionLabel} for ${actor}${ANSI.reset}`;
+  return `${timeTag} ${categoryTag} ${messageText}`;
 }
 
 export function logEvent(category, message, details = null) {

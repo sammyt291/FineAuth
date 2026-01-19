@@ -973,16 +973,47 @@ function parseNumberSetting(value, fallback) {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+function parseDurationString(value) {
+  const input = String(value ?? '').toLowerCase();
+  const regex = /(\d+)\s*(mo|w|d|h|m|s)/g;
+  const unitSeconds = {
+    mo: 30 * 24 * 60 * 60,
+    w: 7 * 24 * 60 * 60,
+    d: 24 * 60 * 60,
+    h: 60 * 60,
+    m: 60,
+    s: 1
+  };
+  const seen = new Set();
+  let totalSeconds = 0;
+  let match = regex.exec(input);
+  while (match) {
+    const amount = Number.parseInt(match[1], 10);
+    const unit = match[2];
+    if (!Number.isNaN(amount) && !seen.has(unit)) {
+      totalSeconds += amount * unitSeconds[unit];
+      seen.add(unit);
+    }
+    match = regex.exec(input);
+  }
+  return totalSeconds;
+}
+
+function parseDurationSetting(value, fallbackSeconds) {
+  const parsed = parseDurationString(value);
+  return parsed > 0 ? parsed : fallbackSeconds;
+}
+
 function getAdminModuleSettings() {
   const moduleData = moduleManager.getModule('admin');
   return moduleData ? moduleSettingsManager.getModuleSettings(moduleData) : {};
 }
 
-function filterHistoryEntries(entries, historyDays, maxEntries) {
+function filterHistoryEntries(entries, historySeconds, maxEntries) {
   const safeEntries = Array.isArray(entries) ? [...entries] : [];
   let filtered = safeEntries;
-  if (historyDays) {
-    const cutoff = Date.now() - historyDays * 24 * 60 * 60 * 1000;
+  if (historySeconds) {
+    const cutoff = Date.now() - historySeconds * 1000;
     filtered = filtered.filter((entry) => {
       if (!entry?.timestamp) {
         return true;
@@ -1053,10 +1084,13 @@ async function syncAccountEsiData(account) {
     adminSettings.mailMaxDataPoints,
     250
   );
-  const mailHistoryDays = parseNumberSetting(adminSettings.mailHistoryDays, 30);
-  const walletHistoryDays = parseNumberSetting(
+  const mailHistorySeconds = parseDurationSetting(
+    adminSettings.mailHistoryDays,
+    30 * 24 * 60 * 60
+  );
+  const walletHistorySeconds = parseDurationSetting(
     adminSettings.walletHistoryDays,
-    30
+    30 * 24 * 60 * 60
   );
   const walletMaxDataPoints = parseNumberSetting(
     adminSettings.walletMaxDataPoints,
@@ -1070,7 +1104,7 @@ async function syncAccountEsiData(account) {
   const walletHistory = {
     overall: filterHistoryEntries(
       previousWalletHistory.overall,
-      walletHistoryDays,
+      walletHistorySeconds,
       walletMaxDataPoints
     ),
     characters: { ...(previousWalletHistory.characters ?? {}) }
@@ -1177,8 +1211,8 @@ async function syncAccountEsiData(account) {
       mailResult.status === 'fulfilled' && Array.isArray(mailResult.value)
         ? mailResult.value
         : [];
-    if (mailHistoryDays) {
-      const cutoff = Date.now() - mailHistoryDays * 24 * 60 * 60 * 1000;
+    if (mailHistorySeconds) {
+      const cutoff = Date.now() - mailHistorySeconds * 1000;
       mailItems = mailItems.filter((mail) => {
         if (!mail.timestamp) {
           return true;
@@ -1316,13 +1350,13 @@ async function syncAccountEsiData(account) {
       const previousEntries = walletHistory.characters[character.name] ?? [];
       walletHistory.characters[character.name] = filterHistoryEntries(
         [...previousEntries, { timestamp: nowIso, balance: character.wallet }],
-        walletHistoryDays,
+        walletHistorySeconds,
         walletMaxDataPoints
       );
     } else if (!walletHistory.characters[character.name]) {
       walletHistory.characters[character.name] = filterHistoryEntries(
         [],
-        walletHistoryDays,
+        walletHistorySeconds,
         walletMaxDataPoints
       );
     }
@@ -1336,7 +1370,7 @@ async function syncAccountEsiData(account) {
   }, 0);
   walletHistory.overall = filterHistoryEntries(
     [...walletHistory.overall, { timestamp: nowIso, total: totalBalance }],
-    walletHistoryDays,
+    walletHistorySeconds,
     walletMaxDataPoints
   );
 

@@ -11,20 +11,26 @@
     "fields": [
       {
         "id": "mailPollMinutes",
-        "label": "Mail poll interval (minutes)",
-        "type": "select",
-        "options": ["5", "15", "30", "60"],
-        "default": "15",
-        "help": "How often to poll mail for every character.",
+        "label": "Mail poll interval",
+        "type": "duration",
+        "default": "15m",
+        "help": "How often to poll mail for every character (e.g. 15m, 1h).",
         "feature": "mail"
       },
       {
         "id": "mailHistoryDays",
-        "label": "Mail history retention (days)",
-        "type": "select",
-        "options": ["7", "30", "90"],
-        "default": "30",
-        "help": "How long mail data is stored in history.",
+        "label": "Mail history retention",
+        "type": "duration",
+        "default": "30d",
+        "help": "How long mail data is stored in history (e.g. 7d, 1w).",
+        "feature": "mail"
+      },
+      {
+        "id": "mailDataCooldown",
+        "label": "Mail data fetch cooldown",
+        "type": "duration",
+        "default": "15s",
+        "help": "Cooldown between mail data refresh requests in the admin panel.",
         "feature": "mail"
       },
       {
@@ -38,20 +44,26 @@
       },
       {
         "id": "skillsPollMinutes",
-        "label": "Skills poll interval (minutes)",
-        "type": "select",
-        "options": ["15", "30", "60", "240"],
-        "default": "30",
-        "help": "How often to poll skills for every character.",
+        "label": "Skills poll interval",
+        "type": "duration",
+        "default": "30m",
+        "help": "How often to poll skills for every character (e.g. 30m, 2h).",
         "feature": "skills"
       },
       {
         "id": "skillsHistoryDays",
-        "label": "Skills history retention (days)",
-        "type": "select",
-        "options": ["7", "30", "90"],
-        "default": "30",
-        "help": "How long skill snapshots are stored in history.",
+        "label": "Skills history retention",
+        "type": "duration",
+        "default": "30d",
+        "help": "How long skill snapshots are stored in history (e.g. 30d).",
+        "feature": "skills"
+      },
+      {
+        "id": "skillsDataCooldown",
+        "label": "Skills data fetch cooldown",
+        "type": "duration",
+        "default": "15s",
+        "help": "Cooldown between skills data refresh requests in the admin panel.",
         "feature": "skills"
       },
       {
@@ -65,20 +77,18 @@
       },
       {
         "id": "trainingQueuePollMinutes",
-        "label": "Training queue poll interval (minutes)",
-        "type": "select",
-        "options": ["15", "30", "60", "240"],
-        "default": "60",
-        "help": "How often to poll training queue data for every character.",
+        "label": "Training queue poll interval",
+        "type": "duration",
+        "default": "60m",
+        "help": "How often to poll training queue data for every character (e.g. 1h).",
         "feature": "skills"
       },
       {
         "id": "trainingQueueHistoryDays",
-        "label": "Training queue history retention (days)",
-        "type": "select",
-        "options": ["7", "30", "90"],
-        "default": "30",
-        "help": "How long training queue history is stored.",
+        "label": "Training queue history retention",
+        "type": "duration",
+        "default": "30d",
+        "help": "How long training queue history is stored (e.g. 30d).",
         "feature": "skills"
       },
       {
@@ -92,20 +102,26 @@
       },
       {
         "id": "walletPollMinutes",
-        "label": "Wallet poll interval (minutes)",
-        "type": "select",
-        "options": ["5", "15", "30", "60"],
-        "default": "15",
-        "help": "How often to poll wallet snapshots for every character.",
+        "label": "Wallet poll interval",
+        "type": "duration",
+        "default": "15m",
+        "help": "How often to poll wallet snapshots for every character (e.g. 15m).",
         "feature": "history"
       },
       {
         "id": "walletHistoryDays",
-        "label": "ISK history window (days)",
-        "type": "select",
-        "options": ["7", "30", "90"],
-        "default": "30",
-        "help": "How long ISK history summaries are stored.",
+        "label": "ISK history window",
+        "type": "duration",
+        "default": "30d",
+        "help": "How long ISK history summaries are stored (e.g. 30d).",
+        "feature": "history"
+      },
+      {
+        "id": "historyDataCooldown",
+        "label": "ISK history data fetch cooldown",
+        "type": "duration",
+        "default": "15s",
+        "help": "Cooldown between ISK history refresh requests in the admin panel.",
         "feature": "history"
       },
       {
