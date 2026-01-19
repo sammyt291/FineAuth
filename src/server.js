@@ -21,6 +21,7 @@ import {
 import { ModuleManager } from './moduleManager.js';
 import { PermissionsManager } from './permissions.js';
 import { ModuleSettingsManager } from './moduleSettings.js';
+import { logEvent } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,12 +50,6 @@ let esiStatus = {
 
 let server;
 let io;
-
-function logEvent(category, message, details = null) {
-  const timestamp = new Date().toISOString();
-  const detailPayload = details ? ` ${JSON.stringify(details)}` : '';
-  console.log(`[${timestamp}] [${category}] ${message}${detailPayload}`);
-}
 
 function headersToObject(headers) {
   const output = {};
