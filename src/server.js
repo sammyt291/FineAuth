@@ -906,6 +906,74 @@ async function fetchEsiAuthorizedJson(url, accessToken, queueMetadata) {
   return response.json();
 }
 
+function parseNumberSetting(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function getAdminModuleSettings() {
+  const moduleData = moduleManager.getModule('admin');
+  return moduleData ? moduleSettingsManager.getModuleSettings(moduleData) : {};
+}
+
+function filterHistoryEntries(entries, historyDays, maxEntries) {
+  const safeEntries = Array.isArray(entries) ? [...entries] : [];
+  let filtered = safeEntries;
+  if (historyDays) {
+    const cutoff = Date.now() - historyDays * 24 * 60 * 60 * 1000;
+    filtered = filtered.filter((entry) => {
+      if (!entry?.timestamp) {
+        return true;
+      }
+      return new Date(entry.timestamp).getTime() >= cutoff;
+    });
+  }
+  if (maxEntries && filtered.length > maxEntries) {
+    filtered = filtered.slice(-maxEntries);
+  }
+  return filtered;
+}
+
+async function fetchEsiNames(ids, queueMetadata) {
+  if (!Array.isArray(ids) || !ids.length) {
+    return new Map();
+  }
+  const response = await fetchWithEsiLogging(
+    'https://esi.evetech.net/latest/universe/names/?datasource=tranquility',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(ids)
+    },
+    queueMetadata
+  );
+  if (!response.ok) {
+    return new Map();
+  }
+  const data = await response.json();
+  const map = new Map();
+  (data ?? []).forEach((entry) => {
+    if (entry?.id) {
+      map.set(entry.id, entry.name ?? null);
+    }
+  });
+  return map;
+}
+
+async function fetchEsiNamesInBatches(ids, queueMetadata, batchSize = 1000) {
+  const output = new Map();
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    const batchMap = await fetchEsiNames(batch, queueMetadata);
+    batchMap.forEach((value, key) => {
+      output.set(key, value);
+    });
+  }
+  return output;
+}
+
 async function syncAccountEsiData(account) {
   const accessToken = await fetchEsiAccessToken(account);
   if (!accessToken) {
@@ -915,12 +983,42 @@ async function syncAccountEsiData(account) {
     return;
   }
   const characters = listCharactersForAccount(db, account.id);
+  const adminSettings = getAdminModuleSettings();
+  const mailMaxDataPoints = parseNumberSetting(
+    adminSettings.mailMaxDataPoints,
+    250
+  );
+  const mailHistoryDays = parseNumberSetting(adminSettings.mailHistoryDays, 30);
+  const walletHistoryDays = parseNumberSetting(
+    adminSettings.walletHistoryDays,
+    30
+  );
+  const walletMaxDataPoints = parseNumberSetting(
+    adminSettings.walletMaxDataPoints,
+    90
+  );
+  const previousDataRow = getModuleAccountData(db, account.id, 'admin');
+  const previousPayload = previousDataRow
+    ? JSON.parse(previousDataRow.data_json)
+    : null;
+  const previousWalletHistory = previousPayload?.walletHistory ?? {};
+  const walletHistory = {
+    overall: filterHistoryEntries(
+      previousWalletHistory.overall,
+      walletHistoryDays,
+      walletMaxDataPoints
+    ),
+    characters: { ...(previousWalletHistory.characters ?? {}) }
+  };
   const payload = {
     accountId: account.id,
     accountName: account.name,
     updatedAt: new Date().toISOString(),
-    characters: []
+    characters: [],
+    walletHistory
   };
+  const nameIds = new Set();
+  const rawCharacters = [];
 
   for (const character of characters) {
     let characterId = character.character_id ?? null;
@@ -992,15 +1090,83 @@ async function syncAccountEsiData(account) {
         walletPromise
       ]);
 
-    payload.characters.push({
+    let mailItems =
+      mailResult.status === 'fulfilled' && Array.isArray(mailResult.value)
+        ? mailResult.value
+        : [];
+    if (mailHistoryDays) {
+      const cutoff = Date.now() - mailHistoryDays * 24 * 60 * 60 * 1000;
+      mailItems = mailItems.filter((mail) => {
+        if (!mail.timestamp) {
+          return true;
+        }
+        return new Date(mail.timestamp).getTime() >= cutoff;
+      });
+    }
+    mailItems = mailItems.slice(0, mailMaxDataPoints);
+    const mailDetails = await Promise.allSettled(
+      mailItems.map((mail) =>
+        fetchEsiAuthorizedJson(
+          `https://esi.evetech.net/latest/characters/${characterId}/mail/${mail.mail_id}/?datasource=tranquility`,
+          accessToken,
+          {
+            taskName: `Sync mail body: ${character.name}`,
+            accountName: account.name,
+            type: 'mail'
+          }
+        )
+      )
+    );
+    const enrichedMail = mailItems.map((mail, index) => {
+      const detail =
+        mailDetails[index]?.status === 'fulfilled'
+          ? mailDetails[index].value
+          : null;
+      return {
+        ...mail,
+        ...detail,
+        body: detail?.body ?? mail.body ?? null
+      };
+    });
+
+    const skills =
+      skillsResult.status === 'fulfilled' ? skillsResult.value : null;
+    const trainingQueue =
+      queueResult.status === 'fulfilled' ? queueResult.value : [];
+    const wallet =
+      walletResult.status === 'fulfilled' ? walletResult.value : null;
+
+    enrichedMail.forEach((mail) => {
+      if (mail.from) {
+        nameIds.add(mail.from);
+      }
+      if (Array.isArray(mail.recipients)) {
+        mail.recipients.forEach((recipient) => {
+          if (recipient?.recipient_id) {
+            nameIds.add(recipient.recipient_id);
+          }
+        });
+      }
+    });
+    (skills?.skills ?? []).forEach((skill) => {
+      if (skill?.skill_id) {
+        nameIds.add(skill.skill_id);
+      }
+    });
+    (trainingQueue ?? []).forEach((entry) => {
+      if (entry?.skill_id) {
+        nameIds.add(entry.skill_id);
+      }
+    });
+
+    rawCharacters.push({
       id: character.id,
       name: character.name,
       characterId,
-      mail: mailResult.status === 'fulfilled' ? mailResult.value : [],
-      skills: skillsResult.status === 'fulfilled' ? skillsResult.value : null,
-      trainingQueue:
-        queueResult.status === 'fulfilled' ? queueResult.value : [],
-      wallet: walletResult.status === 'fulfilled' ? walletResult.value : null,
+      mail: enrichedMail,
+      skills,
+      trainingQueue,
+      wallet,
       errors: {
         mail:
           mailResult.status === 'rejected' ? mailResult.reason?.message : null,
@@ -1019,6 +1185,79 @@ async function syncAccountEsiData(account) {
       }
     });
   }
+
+  const nameMap = await fetchEsiNamesInBatches(
+    Array.from(nameIds),
+    {
+      taskName: `Resolve names: ${account.name}`,
+      accountName: account.name,
+      type: 'names'
+    },
+    1000
+  );
+
+  const nowIso = new Date().toISOString();
+  rawCharacters.forEach((character) => {
+    if (Array.isArray(character.mail)) {
+      character.mail = character.mail.map((mail) => ({
+        ...mail,
+        from_name: nameMap.get(mail.from) ?? mail.from_name ?? null,
+        recipients: Array.isArray(mail.recipients)
+          ? mail.recipients.map((recipient) => ({
+              ...recipient,
+              recipient_name:
+                nameMap.get(recipient?.recipient_id) ??
+                recipient?.recipient_name ??
+                null
+            }))
+          : mail.recipients
+      }));
+    }
+    if (character.skills?.skills) {
+      character.skills = {
+        ...character.skills,
+        skills: character.skills.skills.map((skill) => ({
+          ...skill,
+          name: nameMap.get(skill.skill_id) ?? skill.name ?? null
+        }))
+      };
+    }
+    if (Array.isArray(character.trainingQueue)) {
+      character.trainingQueue = character.trainingQueue.map((entry) => ({
+        ...entry,
+        skill_name: nameMap.get(entry.skill_id) ?? entry.skill_name ?? null
+      }));
+    }
+
+    if (typeof character.wallet === 'number') {
+      const previousEntries = walletHistory.characters[character.name] ?? [];
+      walletHistory.characters[character.name] = filterHistoryEntries(
+        [...previousEntries, { timestamp: nowIso, balance: character.wallet }],
+        walletHistoryDays,
+        walletMaxDataPoints
+      );
+    } else if (!walletHistory.characters[character.name]) {
+      walletHistory.characters[character.name] = filterHistoryEntries(
+        [],
+        walletHistoryDays,
+        walletMaxDataPoints
+      );
+    }
+  });
+
+  const totalBalance = rawCharacters.reduce((sum, character) => {
+    if (typeof character.wallet === 'number') {
+      return sum + character.wallet;
+    }
+    return sum;
+  }, 0);
+  walletHistory.overall = filterHistoryEntries(
+    [...walletHistory.overall, { timestamp: nowIso, total: totalBalance }],
+    walletHistoryDays,
+    walletMaxDataPoints
+  );
+
+  payload.characters = rawCharacters;
 
   upsertModuleAccountData(db, account.id, 'admin', payload);
 }

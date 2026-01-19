@@ -28,7 +28,11 @@ const state = {
     loadingData: false,
     data: null,
     dataError: null,
-    lastDataRequestAt: null
+    lastDataRequestAt: null,
+    mailSearchTitle: '',
+    mailSearchContent: '',
+    mailPage: 1,
+    mailSelectedId: null
   }
 };
 
@@ -767,7 +771,13 @@ function getAdminPayload() {
 }
 
 function getAdminCharacters() {
-  return getAdminPayload()?.characters ?? [];
+  const payload = getAdminPayload();
+  const primaryCharacters = payload?.characters ?? [];
+  const subaccounts = payload?.subaccounts ?? [];
+  const subCharacters = subaccounts.flatMap(
+    (account) => account?.characters ?? []
+  );
+  return [...primaryCharacters, ...subCharacters];
 }
 
 function formatIsk(value) {
@@ -781,8 +791,10 @@ function getAdminMailItems() {
   const items = [];
   getAdminCharacters().forEach((character) => {
     (character.mail ?? []).forEach((mail) => {
+      const mailId = mail.mail_id ?? mail.id ?? null;
       items.push({
         ...mail,
+        mailId,
         characterName: character.name
       });
     });
@@ -792,6 +804,70 @@ function getAdminMailItems() {
     const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
     return bTime - aTime;
   });
+}
+
+function getFilteredMailItems() {
+  const titleTerm = state.admin.mailSearchTitle.trim().toLowerCase();
+  const contentTerm = state.admin.mailSearchContent.trim().toLowerCase();
+  return getAdminMailItems().filter((mail) => {
+    const subject = (mail.subject ?? '').toLowerCase();
+    const body =
+      (mail.body ?? mail.content ?? mail.text ?? '').toString().toLowerCase();
+    const titleMatch = !titleTerm || subject.includes(titleTerm);
+    const contentMatch = !contentTerm || body.includes(contentTerm);
+    return titleMatch && contentMatch;
+  });
+}
+
+function getMailPagination(totalItems, pageSize) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(
+    Math.max(1, state.admin.mailPage),
+    totalPages
+  );
+  return { totalPages, currentPage };
+}
+
+function getMailDetailId(mail) {
+  return `${mail.mailId ?? 'mail'}:${mail.characterName ?? 'unknown'}:${
+    mail.timestamp ?? 'unknown'
+  }`;
+}
+
+function getQueueProgressPercent(entry) {
+  if (!entry?.start_date || !entry?.finish_date) {
+    return null;
+  }
+  const start = new Date(entry.start_date).getTime();
+  const finish = new Date(entry.finish_date).getTime();
+  if (!start || !finish || finish <= start) {
+    return null;
+  }
+  const now = Date.now();
+  const percent = ((now - start) / (finish - start)) * 100;
+  return Math.min(100, Math.max(0, percent));
+}
+
+function formatMailParticipant(participant) {
+  if (!participant) {
+    return 'Unknown';
+  }
+  if (typeof participant === 'string') {
+    return participant;
+  }
+  if (participant.name) {
+    return participant.name;
+  }
+  if (participant.recipient_name) {
+    return participant.recipient_name;
+  }
+  if (participant.recipient_id) {
+    return `ID ${participant.recipient_id}`;
+  }
+  if (participant.id) {
+    return `ID ${participant.id}`;
+  }
+  return 'Unknown';
 }
 
 function ensureAdminSelection() {
@@ -1051,6 +1127,8 @@ function renderAdminModule() {
     state.admin.data = null;
     state.admin.dataError = null;
     state.admin.lastDataRequestAt = null;
+    state.admin.mailSelectedId = null;
+    state.admin.mailPage = 1;
     renderAdminModule();
   });
   accountRow.appendChild(accountLabel);
@@ -1089,9 +1167,21 @@ function renderAdminModule() {
       const titleInput = document.createElement('input');
       titleInput.type = 'text';
       titleInput.placeholder = 'Search by title...';
+      titleInput.value = state.admin.mailSearchTitle;
+      titleInput.addEventListener('input', (event) => {
+        state.admin.mailSearchTitle = event.target.value;
+        state.admin.mailPage = 1;
+        renderAdminModule();
+      });
       const contentInput = document.createElement('input');
       contentInput.type = 'text';
       contentInput.placeholder = 'Search by content...';
+      contentInput.value = state.admin.mailSearchContent;
+      contentInput.addEventListener('input', (event) => {
+        state.admin.mailSearchContent = event.target.value;
+        state.admin.mailPage = 1;
+        renderAdminModule();
+      });
       searchRow.appendChild(titleInput);
       searchRow.appendChild(contentInput);
       content.appendChild(searchRow);
@@ -1105,28 +1195,110 @@ function renderAdminModule() {
       } else if (!adminCharacters.length) {
         list.textContent = 'No mail loaded for the selected account yet.';
       } else {
-        const mailItems = getAdminMailItems().slice(0, 8);
+        const mailItems = getFilteredMailItems();
         if (!mailItems.length) {
           list.textContent = 'No mail loaded for the selected account yet.';
         } else {
           list.innerHTML = '';
           const mailList = document.createElement('ul');
           mailList.className = 'panel-list';
-          mailItems.forEach((mail) => {
+          const pageSize = 8;
+          const { totalPages, currentPage } = getMailPagination(
+            mailItems.length,
+            pageSize
+          );
+          const startIndex = (currentPage - 1) * pageSize;
+          const pageItems = mailItems.slice(startIndex, startIndex + pageSize);
+          pageItems.forEach((mail) => {
             const entry = document.createElement('li');
             const subject = mail.subject ?? 'Untitled mail';
             const timestamp = mail.timestamp
               ? new Date(mail.timestamp).toLocaleString()
               : 'Unknown time';
-            entry.innerHTML = `
-              <div class="queue-row">
-                <span class="queue-name">${subject}</span>
-                <span class="queue-meta">${mail.characterName} • ${timestamp}</span>
-              </div>
-            `;
+            const mailId = getMailDetailId(mail);
+            const subjectButton = document.createElement('button');
+            subjectButton.type = 'button';
+            subjectButton.className = 'admin-mail-subject';
+            subjectButton.textContent = subject;
+            subjectButton.addEventListener('click', () => {
+              state.admin.mailSelectedId =
+                state.admin.mailSelectedId === mailId ? null : mailId;
+              renderAdminModule();
+            });
+            const row = document.createElement('div');
+            row.className = 'queue-row';
+            const nameWrapper = document.createElement('div');
+            nameWrapper.className = 'queue-name';
+            nameWrapper.appendChild(subjectButton);
+            row.appendChild(nameWrapper);
+            const meta = document.createElement('span');
+            meta.className = 'queue-meta';
+            meta.textContent = `${mail.characterName} • ${timestamp}`;
+            row.appendChild(meta);
+            entry.appendChild(row);
+
+            if (state.admin.mailSelectedId === mailId) {
+              const detail = document.createElement('div');
+              detail.className = 'admin-mail-detail';
+              const fromText = formatMailParticipant(
+                mail.from_name ?? mail.fromName ?? mail.from ?? null
+              );
+              const recipients =
+                mail.recipients ??
+                mail.to ??
+                mail.recipientsNames ??
+                mail.recipients_names ??
+                [];
+              const toText = Array.isArray(recipients)
+                ? recipients.map(formatMailParticipant).join(', ')
+                : formatMailParticipant(recipients);
+              const metaRow = document.createElement('div');
+              metaRow.className = 'admin-mail-meta';
+              metaRow.innerHTML = `
+                <span><strong>From:</strong> ${fromText}</span>
+                <span><strong>To:</strong> ${toText || 'Unknown'}</span>
+              `;
+              detail.appendChild(metaRow);
+
+              const body = document.createElement('div');
+              body.className = 'admin-mail-body';
+              const bodyText =
+                mail.body ?? mail.content ?? mail.text ?? 'No content available.';
+              body.textContent = bodyText;
+              detail.appendChild(body);
+              entry.appendChild(detail);
+            }
             mailList.appendChild(entry);
           });
           list.appendChild(mailList);
+
+          const pagination = document.createElement('div');
+          pagination.className = 'admin-pagination';
+          const pageLabel = document.createElement('span');
+          pageLabel.className = 'muted';
+          pageLabel.textContent = `Page ${currentPage} of ${totalPages}`;
+          const prevButton = document.createElement('button');
+          prevButton.className = 'button secondary';
+          prevButton.type = 'button';
+          prevButton.textContent = 'Previous';
+          prevButton.disabled = currentPage <= 1;
+          prevButton.addEventListener('click', () => {
+            state.admin.mailPage = Math.max(1, currentPage - 1);
+            renderAdminModule();
+          });
+          const nextButton = document.createElement('button');
+          nextButton.className = 'button secondary';
+          nextButton.type = 'button';
+          nextButton.textContent = 'Next';
+          nextButton.disabled = currentPage >= totalPages;
+          nextButton.addEventListener('click', () => {
+            state.admin.mailPage = Math.min(totalPages, currentPage + 1);
+            renderAdminModule();
+          });
+          pagination.appendChild(prevButton);
+          pagination.appendChild(pageLabel);
+          pagination.appendChild(nextButton);
+          list.appendChild(pagination);
         }
       }
       content.appendChild(list);
@@ -1138,34 +1310,62 @@ function renderAdminModule() {
       const title = document.createElement('h4');
       title.textContent = 'Skills Overview';
       skillsCard.appendChild(title);
-      const skillsList = document.createElement('ul');
-      skillsList.className = 'panel-list';
+      const skillsList = document.createElement('div');
+      skillsList.className = 'admin-skill-list';
       if (state.admin.loadingData) {
-        const loading = document.createElement('li');
+        const loading = document.createElement('p');
         loading.className = 'muted';
         loading.textContent = 'Loading skill data...';
         skillsList.appendChild(loading);
       } else if (state.admin.dataError) {
-        const error = document.createElement('li');
+        const error = document.createElement('p');
         error.className = 'muted';
         error.textContent = `Unable to load skills: ${state.admin.dataError}`;
         skillsList.appendChild(error);
       } else if (!adminCharacters.length) {
-        const emptySkill = document.createElement('li');
+        const emptySkill = document.createElement('p');
         emptySkill.className = 'muted';
         emptySkill.textContent = 'No skill data loaded for the selected account.';
         skillsList.appendChild(emptySkill);
       } else {
         adminCharacters.forEach((character) => {
-          const entry = document.createElement('li');
+          const entry = document.createElement('details');
+          entry.className = 'card admin-skill-card';
           const totalSp = character.skills?.total_sp ?? null;
-          const skillCount = character.skills?.skills?.length ?? 0;
-          entry.innerHTML = `
-            <div class="queue-row">
-              <span class="queue-name">${character.name}</span>
-              <span class="queue-meta">${formatIsk(totalSp)} SP • ${skillCount} skills</span>
-            </div>
+          const skillEntries = character.skills?.skills ?? [];
+          const skillCount = skillEntries.length;
+          const summary = document.createElement('summary');
+          summary.className = 'admin-skill-summary';
+          summary.innerHTML = `
+            <span>${character.name}</span>
+            <span class="queue-meta">${formatIsk(totalSp)} SP • ${skillCount} skills</span>
           `;
+          entry.appendChild(summary);
+
+          const detailList = document.createElement('ul');
+          detailList.className = 'panel-list';
+          if (!skillEntries.length) {
+            const empty = document.createElement('li');
+            empty.className = 'muted';
+            empty.textContent = 'No skills available.';
+            detailList.appendChild(empty);
+          } else {
+            skillEntries.forEach((skill) => {
+              const item = document.createElement('li');
+              const skillName =
+                skill.name ?? `Skill ${skill.skill_id ?? 'Unknown'}`;
+              const level =
+                skill.trained_skill_level ?? skill.level ?? 'Unknown';
+              item.innerHTML = `
+                <div class="queue-row">
+                  <span class="queue-name">${skillName}</span>
+                  <span class="queue-meta">Level ${level}</span>
+                </div>
+              `;
+              detailList.appendChild(item);
+            });
+          }
+          entry.appendChild(detailList);
           skillsList.appendChild(entry);
         });
       }
@@ -1206,56 +1406,175 @@ function renderAdminModule() {
           const finishTime = entry.finish_date
             ? new Date(entry.finish_date).toLocaleString()
             : 'Unknown';
+          const level = entry.finished_level ?? entry.level ?? 'Unknown';
+          const skillName = entry.skill_name ?? `Skill ${entry.skill_id ?? ''}`;
+          const progress = getQueueProgressPercent(entry);
+          const progressLabel =
+            progress === null
+              ? 'Training progress unavailable'
+              : `Training ${Math.round(progress)}%`;
           item.innerHTML = `
             <div class="queue-row">
-              <span class="queue-name">${entry.skill_id ?? 'Skill'} (${entry.characterName})</span>
+              <span class="queue-name">${skillName} • Level ${level} (${entry.characterName})</span>
               <span class="queue-meta">Finishes ${finishTime}</span>
             </div>
+            <div class="admin-queue-progress">
+              <div class="admin-queue-progress-bar" style="width: ${
+                progress ?? 0
+              }%"></div>
+            </div>
+            <div class="queue-meta">${progressLabel}</div>
           `;
           queueList.appendChild(item);
         });
       }
       queueCard.appendChild(queueList);
       content.appendChild(queueCard);
+    }
 
+    if (feature.key === 'history') {
       const walletCard = document.createElement('div');
       walletCard.className = 'card';
       const walletTitle = document.createElement('h4');
       walletTitle.textContent = 'ISK Snapshot';
       walletCard.appendChild(walletTitle);
-      const walletValue = document.createElement('p');
-      walletValue.className = 'muted';
+      const walletList = document.createElement('ul');
+      walletList.className = 'panel-list';
       if (state.admin.loadingData) {
-        walletValue.textContent = 'Loading wallet data...';
+        const loading = document.createElement('li');
+        loading.className = 'muted';
+        loading.textContent = 'Loading wallet data...';
+        walletList.appendChild(loading);
       } else if (state.admin.dataError) {
-        walletValue.textContent = `Unable to load wallet data: ${state.admin.dataError}`;
+        const error = document.createElement('li');
+        error.className = 'muted';
+        error.textContent = `Unable to load wallet data: ${state.admin.dataError}`;
+        walletList.appendChild(error);
       } else if (!adminCharacters.length) {
-        walletValue.textContent = 'ISK totals will appear once wallet data syncs.';
+        const empty = document.createElement('li');
+        empty.className = 'muted';
+        empty.textContent = 'ISK totals will appear once wallet data syncs.';
+        walletList.appendChild(empty);
       } else {
+        adminCharacters.forEach((character) => {
+          const item = document.createElement('li');
+          const balance =
+            typeof character.wallet === 'number' ? character.wallet : null;
+          item.innerHTML = `
+            <div class="queue-row">
+              <span class="queue-name">${character.name}</span>
+              <span class="queue-meta">${formatIsk(balance)} ISK</span>
+            </div>
+          `;
+          walletList.appendChild(item);
+        });
         const totalBalance = adminCharacters.reduce((sum, character) => {
           const balance = character.wallet;
           return typeof balance === 'number' ? sum + balance : sum;
         }, 0);
-        walletValue.textContent = `Total balance: ${formatIsk(totalBalance)} ISK`;
+        const totalItem = document.createElement('li');
+        totalItem.innerHTML = `
+          <div class="queue-row">
+            <span class="queue-name"><strong>Overall total</strong></span>
+            <span class="queue-meta"><strong>${formatIsk(
+              totalBalance
+            )} ISK</strong></span>
+          </div>
+        `;
+        walletList.appendChild(totalItem);
       }
-      walletCard.appendChild(walletValue);
+      walletCard.appendChild(walletList);
       content.appendChild(walletCard);
-    }
 
-    if (feature.key === 'history') {
       const historyCard = document.createElement('div');
       historyCard.className = 'card';
       const title = document.createElement('h4');
       title.textContent = 'ISK History';
       historyCard.appendChild(title);
-      const summaryText = document.createElement('p');
-      summaryText.className = 'muted';
-      summaryText.textContent = state.admin.loadingData
-        ? 'Loading ISK history...'
-        : state.admin.dataError
-          ? `Unable to load ISK history: ${state.admin.dataError}`
-          : 'No ISK history data available yet for the selected account.';
-      historyCard.appendChild(summaryText);
+      const historyWrapper = document.createElement('div');
+      historyWrapper.className = 'admin-history-list';
+      const walletHistory = getAdminPayload()?.walletHistory ?? null;
+      if (state.admin.loadingData) {
+        const loading = document.createElement('p');
+        loading.className = 'muted';
+        loading.textContent = 'Loading ISK history...';
+        historyWrapper.appendChild(loading);
+      } else if (state.admin.dataError) {
+        const error = document.createElement('p');
+        error.className = 'muted';
+        error.textContent = `Unable to load ISK history: ${state.admin.dataError}`;
+        historyWrapper.appendChild(error);
+      } else if (!walletHistory) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No ISK history data available yet for the selected account.';
+        historyWrapper.appendChild(empty);
+      } else {
+        const overallDetails = document.createElement('details');
+        overallDetails.className = 'admin-history-card';
+        const overallSummary = document.createElement('summary');
+        overallSummary.textContent = 'Overall totals';
+        overallDetails.appendChild(overallSummary);
+        const overallList = document.createElement('ul');
+        overallList.className = 'panel-list';
+        const overallEntries = walletHistory.overall ?? [];
+        if (!overallEntries.length) {
+          const empty = document.createElement('li');
+          empty.className = 'muted';
+          empty.textContent = 'No overall history yet.';
+          overallList.appendChild(empty);
+        } else {
+          overallEntries.forEach((entry) => {
+            const item = document.createElement('li');
+            const label = entry.timestamp
+              ? new Date(entry.timestamp).toLocaleString()
+              : 'Unknown time';
+            item.innerHTML = `
+              <div class="queue-row">
+                <span class="queue-name">${label}</span>
+                <span class="queue-meta">${formatIsk(entry.total)} ISK</span>
+              </div>
+            `;
+            overallList.appendChild(item);
+          });
+        }
+        overallDetails.appendChild(overallList);
+        historyWrapper.appendChild(overallDetails);
+
+        const historyCharacters = walletHistory.characters ?? {};
+        Object.entries(historyCharacters).forEach(([characterName, entries]) => {
+          const details = document.createElement('details');
+          details.className = 'admin-history-card';
+          const summary = document.createElement('summary');
+          summary.textContent = characterName;
+          details.appendChild(summary);
+          const list = document.createElement('ul');
+          list.className = 'panel-list';
+          if (!entries.length) {
+            const empty = document.createElement('li');
+            empty.className = 'muted';
+            empty.textContent = 'No history yet.';
+            list.appendChild(empty);
+          } else {
+            entries.forEach((entry) => {
+              const item = document.createElement('li');
+              const label = entry.timestamp
+                ? new Date(entry.timestamp).toLocaleString()
+                : 'Unknown time';
+              item.innerHTML = `
+                <div class="queue-row">
+                  <span class="queue-name">${label}</span>
+                  <span class="queue-meta">${formatIsk(entry.balance)} ISK</span>
+                </div>
+              `;
+              list.appendChild(item);
+            });
+          }
+          details.appendChild(list);
+          historyWrapper.appendChild(details);
+        });
+      }
+      historyCard.appendChild(historyWrapper);
       content.appendChild(historyCard);
     }
 
