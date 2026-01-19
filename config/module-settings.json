@@ -1,0 +1,10 @@
+{
+  "modules": {
+    "home": {
+      "panelLayout": "vertical"
+    },
+    "characters": {
+      "allowAllMembers": true
+    }
+  }
+}

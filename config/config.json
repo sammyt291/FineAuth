@@ -11,6 +11,8 @@
     "refreshIntervalMinutes": 10,
     "characterNameCheckMinutes": 60,
     "statusRefreshSeconds": 60,
+    "queueRunSeconds": 12,
+    "cacheSeconds": 45,
     "clientId": "",
     "clientSecret": "",
     "callbackUrl": "http://localhost:3000/callback",

@@ -9,10 +9,13 @@ import {
   openDatabase,
   saveAccount,
   getAccountByToken,
-  listCharactersForAccount
+  listCharactersForAccount,
+  addCharacterToAccount,
+  getAccountById
 } from './db.js';
 import { ModuleManager } from './moduleManager.js';
 import { PermissionsManager } from './permissions.js';
+import { ModuleSettingsManager } from './moduleSettings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +31,8 @@ app.use(express.static(path.join(rootDir, 'public')));
 const db = openDatabase(path.join(rootDir, 'data.sqlite'));
 
 const esiQueue = [];
+let esiTaskSequence = 1;
+const esiCache = new Map();
 const esiLoginStates = new Map();
 let esiStatus = {
   status: 'unknown',
@@ -44,11 +49,23 @@ const permissionsManager = new PermissionsManager({
   permissionsPath: path.join(rootDir, 'config', 'permissions.json')
 });
 permissionsManager.registerPermission('admin', 'Full administrative access.');
+permissionsManager.registerPermission(
+  'characters.add',
+  'Allow members to add additional characters.'
+);
+
+const moduleSettingsManager = new ModuleSettingsManager({
+  settingsPath: path.join(rootDir, 'config', 'module-settings.json')
+});
 
 const moduleManager = new ModuleManager({
   modulesPath: path.resolve(rootDir, config.modulesPath),
   moduleExtractPath: path.resolve(rootDir, config.moduleExtractPath),
-  permissionsManager
+  permissionsManager,
+  decorateModule: (moduleData) => ({
+    ...moduleData,
+    settings: moduleSettingsManager.getModuleSettings(moduleData)
+  })
 });
 
 moduleManager.registerAccountModifier((account) => account);
@@ -71,7 +88,7 @@ function createServer() {
   moduleManager.io = io;
   io.on('connection', (socket) => {
     socket.emit('modules:update', moduleManager.listModules());
-    socket.emit('esi:queue', esiQueue);
+    socket.emit('esi:queue', getEsiQueuePayload());
     socket.emit('esi:status', esiStatus);
 
     socket.on('session:request', (payload, respond) => {
@@ -99,13 +116,36 @@ function createServer() {
       });
     });
 
-    socket.on('esi:login', (_payload, respond) => {
+    socket.on('esi:login', (payload, respond) => {
       if (!config.esi.clientId || !config.esi.clientSecret) {
         respond?.({ error: 'ESI SSO is not configured.' });
         return;
       }
+      const mode = payload?.mode ?? 'primary';
+      let account = null;
+      if (mode === 'add-character') {
+        const token = payload?.token;
+        if (!token) {
+          respond?.({ error: 'Missing session token.' });
+          return;
+        }
+        account = getAccountByToken(db, token);
+        if (!account) {
+          respond?.({ error: 'Invalid session token.' });
+          return;
+        }
+        if (!canAddCharacters(account.name)) {
+          respond?.({ error: 'You do not have permission to add characters.' });
+          return;
+        }
+      }
       const state = cryptoRandom();
-      esiLoginStates.set(state, Date.now());
+      esiLoginStates.set(state, {
+        createdAt: Date.now(),
+        mode,
+        accountId: account?.id ?? null,
+        accountName: account?.name ?? null
+      });
       const scope = Array.isArray(config.esi.scopes)
         ? config.esi.scopes.join(' ')
         : '';
@@ -120,6 +160,52 @@ function createServer() {
 
     socket.on('esi:status:request', (_payload, respond) => {
       respond?.(esiStatus);
+    });
+
+    socket.on('module:settings:request', (payload, respond) => {
+      const token = payload?.token;
+      const moduleName = payload?.moduleName;
+      if (!token || !moduleName) {
+        respond?.({ error: 'Missing settings request data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const moduleData = moduleManager.getModule(moduleName);
+      if (!moduleData?.adminSettings) {
+        respond?.({ error: 'Module does not expose settings.' });
+        return;
+      }
+      respond?.({
+        moduleName,
+        settings: moduleSettingsManager.getModuleSettings(moduleData),
+        adminSettings: moduleData.adminSettings
+      });
+    });
+
+    socket.on('module:settings:update', (payload, respond) => {
+      const token = payload?.token;
+      const moduleName = payload?.moduleName;
+      if (!token || !moduleName) {
+        respond?.({ error: 'Missing settings update data.' });
+        return;
+      }
+      const account = getAccountByToken(db, token);
+      if (!account || !permissionsManager.isAdmin(account.name)) {
+        respond?.({ error: 'Admin access required.' });
+        return;
+      }
+      const moduleData = moduleManager.getModule(moduleName);
+      if (!moduleData?.adminSettings) {
+        respond?.({ error: 'Module does not expose settings.' });
+        return;
+      }
+      moduleSettingsManager.updateModuleSettings(moduleData, payload.settings ?? {});
+      moduleManager.notifyClients();
+      respond?.({ ok: true });
     });
   });
 
@@ -170,32 +256,86 @@ async function loadInitialModules() {
 }
 
 function queueEsiTask(taskName) {
-  esiQueue.push({ taskName, queuedAt: new Date().toISOString() });
-  io?.emit('esi:queue', esiQueue);
+  const task = {
+    id: esiTaskSequence++,
+    taskName,
+    queuedAt: new Date().toISOString(),
+    accountName: null,
+    type: 'system',
+    estimatedSeconds: config.esi.queueRunSeconds ?? 12
+  };
+  esiQueue.push(task);
+  emitEsiQueue();
+  return task;
+}
+
+function queueUserEsiTask({ taskName, accountName, type }) {
+  const task = {
+    id: esiTaskSequence++,
+    taskName,
+    queuedAt: new Date().toISOString(),
+    accountName,
+    type,
+    estimatedSeconds: config.esi.queueRunSeconds ?? 12
+  };
+  esiQueue.push(task);
+  emitEsiQueue();
+  return task;
+}
+
+function updateEsiTask(taskId, updates) {
+  const task = esiQueue.find((entry) => entry.id === taskId);
+  if (!task) {
+    return;
+  }
+  Object.assign(task, updates);
+  emitEsiQueue();
+}
+
+function completeEsiTask(taskId) {
+  const index = esiQueue.findIndex((entry) => entry.id === taskId);
+  if (index === -1) {
+    return;
+  }
+  esiQueue.splice(index, 1);
+  emitEsiQueue();
+}
+
+function emitEsiQueue() {
+  io?.emit('esi:queue', getEsiQueuePayload());
+}
+
+function getEsiQueuePayload() {
+  return {
+    items: esiQueue,
+    queueRunSeconds: config.esi.queueRunSeconds ?? 12,
+    updatedAt: new Date().toISOString()
+  };
 }
 
 function clearEsiQueue() {
   esiQueue.length = 0;
-  io?.emit('esi:queue', esiQueue);
+  emitEsiQueue();
 }
 
 function scheduleEsiRefresh() {
   const refreshMs = config.esi.refreshIntervalMinutes * 60 * 1000;
   const nameCheckMs = config.esi.characterNameCheckMinutes * 60 * 1000;
   const statusRefreshMs = (config.esi.statusRefreshSeconds ?? 60) * 1000;
+  const queueRunMs = (config.esi.queueRunSeconds ?? 12) * 1000;
 
   setInterval(() => {
-    queueEsiTask('Refresh ESI tokens');
+    const task = queueEsiTask('Refresh ESI tokens');
     setTimeout(() => {
-      clearEsiQueue();
-    }, 2000);
+      completeEsiTask(task.id);
+    }, queueRunMs);
   }, refreshMs);
 
   setInterval(() => {
-    queueEsiTask('Verify character names');
+    const task = queueEsiTask('Verify character names');
     setTimeout(() => {
-      clearEsiQueue();
-    }, 2000);
+      completeEsiTask(task.id);
+    }, queueRunMs);
   }, nameCheckMs);
 
   setInterval(() => {
@@ -204,14 +344,11 @@ function scheduleEsiRefresh() {
 }
 
 async function refreshEsiStatus() {
+  const task = queueEsiTask('Refresh ESI server status');
   try {
-    const response = await fetch(
+    const data = await fetchEsiJson(
       'https://esi.evetech.net/latest/status/?datasource=tranquility'
     );
-    if (!response.ok) {
-      throw new Error(`ESI status error: ${response.status}`);
-    }
-    const data = await response.json();
     esiStatus = {
       status: 'online',
       players: data.players ?? null,
@@ -227,6 +364,8 @@ async function refreshEsiStatus() {
       lastUpdated: new Date().toISOString(),
       error: error.message
     };
+  } finally {
+    completeEsiTask(task.id);
   }
   io?.emit('esi:status', esiStatus);
 }
@@ -237,12 +376,21 @@ app.get('/callback', async (req, res) => {
     res.status(400).send('Invalid ESI callback.');
     return;
   }
+  const loginState = esiLoginStates.get(state);
   esiLoginStates.delete(state);
 
   const credentials = Buffer.from(
     `${config.esi.clientId}:${config.esi.clientSecret}`
   ).toString('base64');
 
+  const task = queueUserEsiTask({
+    taskName:
+      loginState?.mode === 'add-character'
+        ? 'Add character: Authenticating'
+        : 'ESI login',
+    accountName: loginState?.accountName ?? null,
+    type: 'login'
+  });
   try {
     const tokenResponse = await fetch('https://login.eveonline.com/v2/oauth/token', {
       method: 'POST',
@@ -277,6 +425,38 @@ app.get('/callback', async (req, res) => {
     }
 
     const verifyData = await verifyResponse.json();
+    updateEsiTask(task.id, {
+      taskName:
+        loginState?.mode === 'add-character'
+          ? `Add character: ${verifyData.CharacterName}`
+          : 'ESI login'
+    });
+
+    if (loginState?.mode === 'add-character' && loginState.accountId) {
+      const account = getAccountById(db, loginState.accountId);
+      if (!account) {
+        res.status(400).send('Account not found for character add.');
+        return;
+      }
+      addCharacterToAccount(db, account.id, verifyData.CharacterName);
+      res.send(`
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>FineAuth Characters</title>
+          </head>
+          <body>
+            <script>
+              window.location.href = '/#/module/characters';
+            </script>
+            <p>Adding character...</p>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
     const accessToken = cryptoRandom();
     saveAccount({
       db,
@@ -307,6 +487,8 @@ app.get('/callback', async (req, res) => {
     `);
   } catch (error) {
     res.status(500).send(`ESI login failed: ${error.message}`);
+  } finally {
+    completeEsiTask(task.id);
   }
 });
 
@@ -323,6 +505,40 @@ app.use('/modules', (req, res, next) => {
 
 function cryptoRandom() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
+  const ttlMs = (ttlSeconds ?? config.esi.cacheSeconds ?? 45) * 1000;
+  const cacheKey = url;
+  if (cache) {
+    const cached = esiCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`ESI status error: ${response.status}`);
+  }
+  const data = await response.json();
+  if (cache) {
+    esiCache.set(cacheKey, {
+      value: data,
+      expiresAt: Date.now() + ttlMs
+    });
+  }
+  return data;
+}
+
+function canAddCharacters(accountName) {
+  const moduleData = moduleManager.getModule('characters');
+  const settings = moduleData
+    ? moduleSettingsManager.getModuleSettings(moduleData)
+    : {};
+  if (settings.allowAllMembers) {
+    return true;
+  }
+  return permissionsManager.hasPermission(accountName, 'characters.add');
 }
 
 function handleConsoleCommands() {

@@ -52,6 +52,43 @@ body {
   gap: 0.75rem;
 }
 
+.nav-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: #c9d5ff;
+  text-align: right;
+}
+
+.nav-status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.nav-status-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  color: #9aa7d7;
+}
+
+.nav-status-value {
+  font-weight: 600;
+  color: #e7ecff;
+}
+
+.nav-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(124, 240, 255, 0.4);
+  border-top-color: #7cf0ff;
+  animation: spin 1s linear infinite;
+}
+
 .nav-button {
   font-size: 0.85rem;
   padding: 0.5rem 0.85rem;
@@ -100,6 +137,106 @@ body {
 #main-content {
   flex: 1;
   padding: 2rem;
+}
+
+.module-wrapper {
+  position: relative;
+}
+
+.module-settings-button {
+  position: absolute;
+  top: -10px;
+  right: 0;
+  background: rgba(16, 22, 36, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 0.35rem 0.6rem;
+  font-size: 1rem;
+  cursor: pointer;
+  color: #e7ecff;
+}
+
+.module-settings-button:hover {
+  color: #7cf0ff;
+}
+
+.home-panels {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.home-panels.vertical {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.home-panels.horizontal {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.panel-card {
+  background: rgba(16, 22, 36, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel-heading h3 {
+  margin: 0 0 0.35rem;
+}
+
+.panel-heading p {
+  margin: 0;
+  color: #c9d5ff;
+}
+
+.panel-meta {
+  font-size: 0.8rem;
+  color: #9aa7d7;
+}
+
+.panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.panel-list li {
+  padding: 0.45rem 0.75rem;
+  border-radius: 0.5rem;
+  background: rgba(9, 12, 22, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.panel-list .muted {
+  color: #9aa7d7;
+  font-style: italic;
+}
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.queue-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.queue-name {
+  font-weight: 600;
+}
+
+.queue-meta {
+  color: #9aa7d7;
 }
 
 #footer {
@@ -187,6 +324,67 @@ body {
   flex-direction: column;
   gap: 1rem;
   margin-top: 1.5rem;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 15, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 1.5rem;
+}
+
+.modal-card {
+  background: rgba(16, 22, 36, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1rem;
+  padding: 1.75rem;
+  width: min(520px, 95vw);
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.45);
+}
+
+.modal-field {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.modal-field label {
+  font-weight: 600;
+}
+
+.modal-field input[type='text'],
+.modal-field select {
+  background: rgba(10, 12, 22, 0.8);
+  color: #e7ecff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.modal-help {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #9aa7d7;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .login-form {

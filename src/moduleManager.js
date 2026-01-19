@@ -3,13 +3,20 @@ import path from 'path';
 import AdmZip from 'adm-zip';
 
 export class ModuleManager {
-  constructor({ modulesPath, moduleExtractPath, io, permissionsManager }) {
+  constructor({
+    modulesPath,
+    moduleExtractPath,
+    io,
+    permissionsManager,
+    decorateModule
+  }) {
     this.modulesPath = modulesPath;
     this.moduleExtractPath = moduleExtractPath;
     this.io = io;
     this.modules = new Map();
     this.accountModifiers = [];
     this.permissionsManager = permissionsManager;
+    this.decorateModule = decorateModule;
     this.ensureExtractPath();
   }
 
@@ -30,7 +37,13 @@ export class ModuleManager {
   }
 
   listModules() {
-    return Array.from(this.modules.values());
+    const modules = Array.from(this.modules.values()).map((moduleData) => ({
+      ...moduleData
+    }));
+    if (this.decorateModule) {
+      return modules.map((moduleData) => this.decorateModule(moduleData));
+    }
+    return modules;
   }
 
   getModule(name) {
@@ -116,6 +129,8 @@ export class ModuleManager {
       config: manifest.config ?? {},
       hidden: manifest.hidden ?? false,
       permissions: manifest.permissions ?? [],
+      adminSettings: manifest.adminSettings ?? null,
+      homePanel: manifest.homePanel ?? null,
       loadedAt: new Date().toISOString(),
       source
     };

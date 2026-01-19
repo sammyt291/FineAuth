@@ -6,12 +6,20 @@ const state = {
   modules: [],
   account: null,
   esiQueue: [],
+  esiQueueMeta: {
+    queueRunSeconds: 12,
+    updatedAt: null
+  },
   socketConnected: false,
   loginError: null,
-  esiStatus: null
+  esiStatus: null,
+  charactersError: null,
+  settingsModal: null
 };
 
 let socket;
+let queueTickerId;
+let ellipsisTick = 0;
 
 const helpers = {
   createGridContainer(items) {
@@ -48,6 +56,27 @@ const helpers = {
     const items = Array.from(container.children);
     items.sort((a, b) => order.indexOf(a.dataset.order) - order.indexOf(b.dataset.order));
     items.forEach((item) => container.appendChild(item));
+  },
+  formatDuration(totalSeconds) {
+    const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    const seconds = safeSeconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes
+      .toString()
+      .padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  },
+  getModule(moduleName) {
+    return state.modules.find((module) => module.name === moduleName) ?? null;
+  },
+  getEsiStatusLabel(status) {
+    if (status?.status === 'online') {
+      return 'Online';
+    }
+    if (status?.status === 'unavailable') {
+      return 'Unavailable';
+    }
+    return 'Unknown';
   }
 };
 
@@ -56,6 +85,50 @@ function getDefaultModule() {
     return 'landing';
   }
   return 'home';
+}
+
+function getUserEsiTasks() {
+  if (!state.account) {
+    return [];
+  }
+  return state.esiQueue.filter((task) => task.accountName === state.account.name);
+}
+
+function getEsiQueuePosition(taskId) {
+  const index = state.esiQueue.findIndex((task) => task.id === taskId);
+  return index === -1 ? null : index + 1;
+}
+
+function getHomeLayout() {
+  const homeModule = helpers.getModule('home');
+  return homeModule?.settings?.panelLayout ?? 'vertical';
+}
+
+function startQueueTicker() {
+  if (queueTickerId) {
+    return;
+  }
+  queueTickerId = window.setInterval(() => {
+    if (!state.account) {
+      return;
+    }
+    ellipsisTick = (ellipsisTick + 1) % 4;
+    const activeHash = window.location.hash;
+    if (activeHash === '#/module/home') {
+      renderHome();
+      return;
+    }
+    if (activeHash === '#/module/characters') {
+      renderCharactersModule();
+    }
+  }, 1000);
+}
+
+function stopQueueTicker() {
+  if (queueTickerId) {
+    window.clearInterval(queueTickerId);
+    queueTickerId = null;
+  }
 }
 
 function renderNav() {
@@ -104,11 +177,37 @@ function renderNav() {
 
   const actions = document.createElement('div');
   actions.className = 'nav-actions';
+
+  const statusWrap = document.createElement('div');
+  statusWrap.className = 'nav-status';
+  const statusLine = document.createElement('div');
+  statusLine.className = 'nav-status-line';
+  const statusValue = helpers.getEsiStatusLabel(state.esiStatus);
+  statusLine.innerHTML = `
+    <span class="nav-status-label">ESI:</span>
+    <span class="nav-status-value">${statusValue}</span>
+  `;
+  if (getUserEsiTasks().length) {
+    const spinner = document.createElement('span');
+    spinner.className = 'nav-spinner';
+    spinner.title = 'ESI requests in progress';
+    statusLine.appendChild(spinner);
+  }
+  const queueLine = document.createElement('div');
+  queueLine.className = 'nav-status-line';
+  queueLine.innerHTML = `
+    <span class="nav-status-label">Queue:</span>
+    <span class="nav-status-value">${state.esiQueue.length}</span>
+  `;
+  statusWrap.appendChild(statusLine);
+  statusWrap.appendChild(queueLine);
+
   const logoutButton = document.createElement('button');
   logoutButton.className = 'button secondary nav-button';
   logoutButton.type = 'button';
   logoutButton.textContent = 'Log out';
   logoutButton.addEventListener('click', handleLogout);
+  actions.appendChild(statusWrap);
   actions.appendChild(logoutButton);
 
   container.appendChild(list);
@@ -160,59 +259,221 @@ function renderLanding() {
   mainContent.appendChild(container);
 }
 
+function createPanelCard({ title, subtitle }) {
+  const card = document.createElement('div');
+  card.className = 'panel-card';
+  const heading = document.createElement('div');
+  heading.className = 'panel-heading';
+  const titleEl = document.createElement('h3');
+  titleEl.textContent = title;
+  heading.appendChild(titleEl);
+  if (subtitle) {
+    const sub = document.createElement('p');
+    sub.textContent = subtitle;
+    heading.appendChild(sub);
+  }
+  card.appendChild(heading);
+  return { card, heading };
+}
+
+function createHomePanel(moduleData) {
+  if (moduleData.name === 'characters') {
+    return createCharactersPanel(moduleData);
+  }
+  const { card } = createPanelCard({
+    title: moduleData.homePanel?.title ?? moduleData.displayName,
+    subtitle: moduleData.homePanel?.description ?? moduleData.description
+  });
+  const meta = document.createElement('div');
+  meta.className = 'panel-meta';
+  meta.textContent = `Module: ${moduleData.displayName}`;
+  card.appendChild(meta);
+  const button = document.createElement('button');
+  button.className = 'button secondary';
+  button.type = 'button';
+  button.textContent = 'Open module';
+  button.addEventListener('click', () => {
+    window.location.hash = `#/module/${moduleData.name}`;
+  });
+  card.appendChild(button);
+  return card;
+}
+
+function createCharactersPanel(moduleData) {
+  const { card } = createPanelCard({
+    title: moduleData.homePanel?.title ?? 'Characters',
+    subtitle: moduleData.homePanel?.description
+  });
+
+  const list = document.createElement('ul');
+  list.className = 'panel-list';
+  const characters = state.account?.characters ?? [];
+  if (characters.length) {
+    characters.forEach((name) => {
+      const item = document.createElement('li');
+      item.textContent = name;
+      list.appendChild(item);
+    });
+  } else {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = 'No characters linked yet.';
+    list.appendChild(empty);
+  }
+  card.appendChild(list);
+
+  const actionRow = document.createElement('div');
+  actionRow.className = 'panel-actions';
+  const manageButton = document.createElement('button');
+  manageButton.className = 'button secondary';
+  manageButton.type = 'button';
+  manageButton.textContent = 'Manage characters';
+  manageButton.addEventListener('click', () => {
+    window.location.hash = '#/module/characters';
+  });
+  const addButton = document.createElement('button');
+  addButton.className = 'button';
+  addButton.type = 'button';
+  addButton.textContent = 'Add character';
+  addButton.addEventListener('click', handleAddCharacter);
+  actionRow.appendChild(manageButton);
+  actionRow.appendChild(addButton);
+  card.appendChild(actionRow);
+
+  return card;
+}
+
+function createEsiQueuePanel(tasks) {
+  const { card } = createPanelCard({
+    title: 'Your ESI Requests',
+    subtitle: 'Only your in-flight ESI requests are shown.'
+  });
+  const list = document.createElement('ul');
+  list.className = 'panel-list';
+  const queueRunSeconds = state.esiQueueMeta.queueRunSeconds ?? 12;
+  tasks.forEach((task) => {
+    const item = document.createElement('li');
+    const position = getEsiQueuePosition(task.id);
+    const queuedAt = new Date(task.queuedAt).getTime();
+    const elapsedSeconds = (Date.now() - queuedAt) / 1000;
+    const etaSeconds = queueRunSeconds * (position ?? 1) - elapsedSeconds;
+    const ellipsis = '.'.repeat(ellipsisTick);
+    item.innerHTML = `
+      <div class="queue-row">
+        <span class="queue-name">${task.taskName}${ellipsis}</span>
+        <span class="queue-meta">#${position ?? '—'}</span>
+      </div>
+      <div class="queue-row">
+        <span class="queue-meta">ETA ${helpers.formatDuration(etaSeconds)}</span>
+        <span class="queue-meta">[${task.id}]</span>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+  card.appendChild(list);
+  return card;
+}
+
 function renderHome() {
   mainContent.innerHTML = '';
+  const panels = [];
+  const panelModules = state.modules
+    .filter((module) => module.homePanel && !module.hidden)
+    .sort(
+      (a, b) =>
+        (a.homePanel?.position ?? 0) - (b.homePanel?.position ?? 0)
+    );
+
+  panelModules.forEach((module) => {
+    panels.push(createHomePanel(module));
+  });
+
+  const userTasks = getUserEsiTasks();
+  if (userTasks.length) {
+    panels.push(createEsiQueuePanel(userTasks));
+  }
+
+  const homeModule = helpers.getModule('home');
+  const settingsButton = createModuleSettingsButton(homeModule);
+
+  if (!panels.length && !settingsButton) {
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'module-wrapper';
+
+  if (settingsButton) {
+    wrapper.appendChild(settingsButton);
+  }
+
+  if (panels.length) {
+    const container = document.createElement('div');
+    container.className = `home-panels ${getHomeLayout()}`;
+    panels.forEach((panel) => container.appendChild(panel));
+    wrapper.appendChild(container);
+  }
+
+  mainContent.appendChild(wrapper);
+}
+
+function renderCharactersModule() {
+  mainContent.innerHTML = '';
+  const moduleData = helpers.getModule('characters');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'module-wrapper';
+  const settingsButton = createModuleSettingsButton(moduleData);
+  if (settingsButton) {
+    wrapper.appendChild(settingsButton);
+  }
+
   const card = document.createElement('div');
   card.className = 'card';
-
   const title = document.createElement('h2');
-  title.textContent = 'FineAuth Home';
+  title.textContent = 'Characters';
   card.appendChild(title);
 
-  const status = document.createElement('div');
-  status.className = 'status-line';
-  status.innerHTML = `
-    <span>Socket.io: ${state.socketConnected ? 'Connected' : 'Disconnected'}</span>
-    <span>Account: ${state.account ? state.account.name : 'Not signed in'}</span>
-    <span>Role: ${state.account?.isAdmin ? 'Admin' : 'Member'}</span>
-  `;
-  card.appendChild(status);
+  const description = document.createElement('p');
+  description.textContent =
+    'Use ESI OAuth to link additional characters to your FineAuth account.';
+  card.appendChild(description);
 
-  const helperInfo = document.createElement('p');
-  helperInfo.textContent = 'Helpers for grid-aligned boxes, content order, and hover tooltips:';
-  card.appendChild(helperInfo);
+  if (state.charactersError) {
+    const error = document.createElement('p');
+    error.className = 'error-text';
+    error.textContent = state.charactersError;
+    card.appendChild(error);
+  }
 
-  const grid = helpers.createGridContainer([
-    helpers.createBox({
-      title: 'Grid Align',
-      body: 'Use helper-grid for responsive layouts.',
-      tooltip: 'Grid boxes auto-flow to the available space.'
-    }),
-    helpers.createBox({
-      title: 'Content Margins',
-      body: 'Apply consistent padding/margins with card + helper-box.',
-      tooltip: 'Spacing controlled in styles.css.'
-    }),
-    helpers.createBox({
-      title: 'Hover Events',
-      body: 'Hover over boxes for tooltips that track the cursor.',
-      tooltip: 'Tooltips follow your mouse position.'
-    })
-  ]);
-  card.appendChild(grid);
+  const list = document.createElement('ul');
+  list.className = 'panel-list';
+  const characters = state.account?.characters ?? [];
+  if (characters.length) {
+    characters.forEach((name) => {
+      const item = document.createElement('li');
+      item.textContent = name;
+      list.appendChild(item);
+    });
+  } else {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = 'No linked characters yet.';
+    list.appendChild(empty);
+  }
+  card.appendChild(list);
 
-  const queueTitle = document.createElement('h3');
-  queueTitle.textContent = 'ESI Queue';
-  card.appendChild(queueTitle);
+  const actionRow = document.createElement('div');
+  actionRow.className = 'panel-actions';
+  const addButton = document.createElement('button');
+  addButton.className = 'button';
+  addButton.type = 'button';
+  addButton.textContent = 'Add character via ESI';
+  addButton.addEventListener('click', handleAddCharacter);
+  actionRow.appendChild(addButton);
+  card.appendChild(actionRow);
 
-  const queueBlock = document.createElement('div');
-  queueBlock.className = 'code-block';
-  queueBlock.textContent = state.esiQueue.length
-    ? JSON.stringify(state.esiQueue, null, 2)
-    : 'No ESI tasks queued.';
-  card.appendChild(queueBlock);
-
-  mainContent.appendChild(card);
+  wrapper.appendChild(card);
+  mainContent.appendChild(wrapper);
 }
 
 function renderModulePage(moduleName) {
@@ -228,6 +489,10 @@ function renderModulePage(moduleName) {
     renderHome();
     return;
   }
+  if (moduleName === 'characters') {
+    renderCharactersModule();
+    return;
+  }
   if (moduleName === 'navigation') {
     renderNavigationModule();
     return;
@@ -238,13 +503,20 @@ function renderModulePage(moduleName) {
     return;
   }
   if (moduleData.name !== 'home' && moduleData.name !== 'landing') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'module-wrapper';
+    const settingsButton = createModuleSettingsButton(moduleData);
+    if (settingsButton) {
+      wrapper.appendChild(settingsButton);
+    }
     const iframe = document.createElement('iframe');
     iframe.src = `/modules/${moduleName}/${moduleData.mainPage}`;
     iframe.style.width = '100%';
     iframe.style.height = '80vh';
     iframe.style.border = 'none';
     mainContent.innerHTML = '';
-    mainContent.appendChild(iframe);
+    wrapper.appendChild(iframe);
+    mainContent.appendChild(wrapper);
     return;
   }
   renderHome();
@@ -271,6 +543,157 @@ function renderNavigationModule() {
   });
   card.appendChild(list);
   mainContent.appendChild(card);
+}
+
+function createModuleSettingsButton(moduleData) {
+  if (!moduleData?.adminSettings || !state.account?.isAdmin) {
+    return null;
+  }
+  const button = document.createElement('button');
+  button.className = 'module-settings-button';
+  button.type = 'button';
+  button.textContent = '⚙️';
+  button.title = 'Module settings';
+  button.addEventListener('click', () => openModuleSettings(moduleData));
+  return button;
+}
+
+function openModuleSettings(moduleData) {
+  if (!socket || !moduleData) {
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  socket.emit(
+    'module:settings:request',
+    { token, moduleName: moduleData.name },
+    (response) => {
+      if (response?.error) {
+        state.settingsModal = null;
+        renderSettingsModal();
+        return;
+      }
+      state.settingsModal = response;
+      renderSettingsModal();
+    }
+  );
+}
+
+function closeSettingsModal() {
+  state.settingsModal = null;
+  renderSettingsModal();
+}
+
+function renderSettingsModal() {
+  const existing = document.querySelector('.modal-overlay');
+  if (existing) {
+    existing.remove();
+  }
+  if (!state.settingsModal) {
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      closeSettingsModal();
+    }
+  });
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-card';
+
+  const title = document.createElement('h3');
+  title.textContent = state.settingsModal.adminSettings?.title ?? 'Module Settings';
+  modal.appendChild(title);
+
+  const fields = state.settingsModal.adminSettings?.fields ?? [];
+  fields.forEach((field) => {
+    const row = document.createElement('div');
+    row.className = 'modal-field';
+    const label = document.createElement('label');
+    label.textContent = field.label ?? field.id ?? 'Setting';
+    row.appendChild(label);
+
+    let input;
+    if (field.type === 'select') {
+      input = document.createElement('select');
+      (field.options ?? []).forEach((option) => {
+        const optionEl = document.createElement('option');
+        optionEl.value = option;
+        optionEl.textContent = option;
+        input.appendChild(optionEl);
+      });
+      input.value = state.settingsModal.settings?.[field.id] ?? field.default ?? '';
+    } else if (field.type === 'toggle') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked =
+        state.settingsModal.settings?.[field.id] ?? field.default ?? false;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = state.settingsModal.settings?.[field.id] ?? field.default ?? '';
+    }
+    input.dataset.fieldId = field.id;
+    input.dataset.fieldType = field.type ?? 'text';
+    row.appendChild(input);
+
+    if (field.help) {
+      const help = document.createElement('p');
+      help.className = 'modal-help';
+      help.textContent = field.help;
+      row.appendChild(help);
+    }
+    modal.appendChild(row);
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const cancelButton = document.createElement('button');
+  cancelButton.className = 'button secondary';
+  cancelButton.type = 'button';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.addEventListener('click', closeSettingsModal);
+
+  const saveButton = document.createElement('button');
+  saveButton.className = 'button';
+  saveButton.type = 'button';
+  saveButton.textContent = 'Save settings';
+  saveButton.addEventListener('click', () => {
+    const token = localStorage.getItem('fineauth_token');
+    const nextSettings = {};
+    modal.querySelectorAll('[data-field-id]').forEach((inputEl) => {
+      const fieldId = inputEl.dataset.fieldId;
+      const fieldType = inputEl.dataset.fieldType;
+      if (fieldType === 'toggle') {
+        nextSettings[fieldId] = inputEl.checked;
+      } else {
+        nextSettings[fieldId] = inputEl.value;
+      }
+    });
+    socket.emit(
+      'module:settings:update',
+      {
+        token,
+        moduleName: state.settingsModal.moduleName,
+        settings: nextSettings
+      },
+      (response) => {
+        if (response?.ok) {
+          closeSettingsModal();
+          return;
+        }
+        closeSettingsModal();
+      }
+    );
+  });
+
+  actions.appendChild(cancelButton);
+  actions.appendChild(saveButton);
+  modal.appendChild(actions);
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
 }
 
 function navigate() {
@@ -310,10 +733,35 @@ function handleEsiLogin() {
   });
 }
 
+function handleAddCharacter() {
+  if (!socket || !socket.connected) {
+    state.charactersError = 'Socket is not connected. Try again shortly.';
+    renderCharactersModule();
+    return;
+  }
+  const token = localStorage.getItem('fineauth_token');
+  state.charactersError = null;
+  socket.emit('esi:login', { mode: 'add-character', token }, (response) => {
+    if (response?.url) {
+      window.location.href = response.url;
+      return;
+    }
+    state.charactersError = response?.error ?? 'Failed to start character login.';
+    if (window.location.hash === '#/module/characters') {
+      renderCharactersModule();
+      return;
+    }
+    renderHome();
+  });
+}
+
 function handleLogout() {
   localStorage.removeItem('fineauth_token');
   state.account = null;
   state.loginError = null;
+  state.charactersError = null;
+  state.settingsModal = null;
+  renderSettingsModal();
   renderNav();
   navigate();
   renderFooter();
@@ -389,6 +837,7 @@ function setupSocket() {
     socket.emit('esi:status:request', null, (status) => {
       if (status) {
         state.esiStatus = status;
+        renderNav();
         renderFooter();
       }
     });
@@ -396,12 +845,32 @@ function setupSocket() {
   });
   socket.on('disconnect', () => {
     state.socketConnected = false;
+    stopQueueTicker();
     navigate();
   });
   socket.on('esi:queue', (queue) => {
-    state.esiQueue = queue;
-    if (window.location.hash === '#/module/home') {
+    if (Array.isArray(queue)) {
+      state.esiQueue = queue;
+      state.esiQueueMeta = { queueRunSeconds: 12, updatedAt: null };
+    } else {
+      state.esiQueue = queue?.items ?? [];
+      state.esiQueueMeta = {
+        queueRunSeconds: queue?.queueRunSeconds ?? 12,
+        updatedAt: queue?.updatedAt ?? null
+      };
+    }
+    renderNav();
+    const hash = window.location.hash;
+    if (hash === '#/module/home') {
       renderHome();
+    }
+    if (hash === '#/module/characters') {
+      renderCharactersModule();
+    }
+    if (state.esiQueue.length) {
+      startQueueTicker();
+    } else {
+      stopQueueTicker();
     }
   });
   socket.on('modules:update', (modules) => {
@@ -412,10 +881,14 @@ function setupSocket() {
     if (moduleName && !modules.find((module) => module.name === moduleName)) {
       window.location.hash = `#/module/${getDefaultModule()}`;
     }
+    if (moduleName) {
+      renderModulePage(moduleName);
+    }
     renderFooter();
   });
   socket.on('esi:status', (status) => {
     state.esiStatus = status;
+    renderNav();
     renderFooter();
   });
   socket.on('permissions:updated', () => {

@@ -7,6 +7,10 @@
     "navigation.view": {
       "description": "View the navigation demo module.",
       "accounts": []
+    },
+    "characters.add": {
+      "description": "Allow members to add additional characters.",
+      "accounts": []
     }
   }
 }
