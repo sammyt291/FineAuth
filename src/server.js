@@ -58,6 +58,7 @@ let io;
 const esiRateLimitMs = 500;
 let esiNextRequestAt = 0;
 let esiRateLimiter = Promise.resolve();
+const esiRateLimits = new Map();
 
 function headersToObject(headers) {
   const output = {};
@@ -91,6 +92,133 @@ function redactHeaders(headers) {
   return output;
 }
 
+function parseEsiRateLimitWindow(limitHeader) {
+  if (!limitHeader || typeof limitHeader !== 'string') {
+    return null;
+  }
+  const match = limitHeader.trim().match(/^(\d+)\s*\/\s*(\d+)\s*([smhd])$/i);
+  if (!match) {
+    return null;
+  }
+  const limit = Number.parseInt(match[1], 10);
+  const windowValue = Number.parseInt(match[2], 10);
+  const unit = match[3].toLowerCase();
+  if (!Number.isFinite(limit) || !Number.isFinite(windowValue)) {
+    return null;
+  }
+  const unitMultipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000
+  };
+  const windowMs = windowValue * (unitMultipliers[unit] ?? 0);
+  if (!windowMs) {
+    return null;
+  }
+  return { limit, windowMs };
+}
+
+function parseRetryAfterMs(retryAfterHeader) {
+  if (!retryAfterHeader) {
+    return null;
+  }
+  const asNumber = Number.parseInt(retryAfterHeader, 10);
+  if (Number.isFinite(asNumber)) {
+    return asNumber * 1000;
+  }
+  const parsedDate = Date.parse(retryAfterHeader);
+  if (Number.isFinite(parsedDate)) {
+    return Math.max(0, parsedDate - Date.now());
+  }
+  return null;
+}
+
+function getEsiTokenCost(status) {
+  if (status >= 200 && status < 300) {
+    return 2;
+  }
+  if (status >= 300 && status < 400) {
+    return 1;
+  }
+  if (status === 429) {
+    return 0;
+  }
+  if (status >= 400 && status < 500) {
+    return 5;
+  }
+  if (status >= 500 && status < 600) {
+    return 0;
+  }
+  return 0;
+}
+
+function updateEsiRateLimitState(responseHeaders, status) {
+  if (!responseHeaders) {
+    return;
+  }
+  const normalized = Object.fromEntries(
+    Object.entries(responseHeaders).map(([key, value]) => [
+      key.toLowerCase(),
+      value
+    ])
+  );
+  const group = normalized['x-ratelimit-group'];
+  const limitHeader = normalized['x-ratelimit-limit'];
+  const remainingHeader = normalized['x-ratelimit-remaining'];
+  const usedHeader = normalized['x-ratelimit-used'];
+  const retryAfterHeader = normalized['retry-after'];
+  if (!group || !limitHeader) {
+    return;
+  }
+  const windowInfo = parseEsiRateLimitWindow(limitHeader);
+  if (!windowInfo) {
+    return;
+  }
+  const remaining = Number.parseInt(remainingHeader, 10);
+  const used = Number.parseInt(usedHeader, 10);
+  const tokenCost = getEsiTokenCost(status ?? 0);
+  const intervalMs = Math.ceil(windowInfo.windowMs / Math.max(windowInfo.limit, 1));
+  const costMultiplier = Math.max(tokenCost, 1);
+  const costIntervalMs = intervalMs * costMultiplier;
+  const now = Date.now();
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+  const retryAfterUntil = retryAfterMs ? now + retryAfterMs : null;
+  const blockedUntil =
+    Number.isFinite(remaining) && remaining <= 0 ? now + windowInfo.windowMs : null;
+
+  esiRateLimits.set(group, {
+    group,
+    limit: windowInfo.limit,
+    windowMs: windowInfo.windowMs,
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    used: Number.isFinite(used) ? used : null,
+    intervalMs,
+    costIntervalMs,
+    blockedUntil,
+    retryAfterUntil,
+    updatedAt: now
+  });
+}
+
+function getEsiRateLimitConstraints() {
+  let minIntervalMs = esiRateLimitMs;
+  let blockedUntil = 0;
+  esiRateLimits.forEach((entry) => {
+    const interval = entry.costIntervalMs ?? entry.intervalMs;
+    if (interval && interval > minIntervalMs) {
+      minIntervalMs = interval;
+    }
+    if (entry.blockedUntil && entry.blockedUntil > blockedUntil) {
+      blockedUntil = entry.blockedUntil;
+    }
+    if (entry.retryAfterUntil && entry.retryAfterUntil > blockedUntil) {
+      blockedUntil = entry.retryAfterUntil;
+    }
+  });
+  return { minIntervalMs, blockedUntil };
+}
+
 async function fetchWithEsiLogging(url, options = {}, queueMetadata = null) {
   const method = options.method ?? 'GET';
   const requestHeaders = redactHeaders(headersToObject(options.headers ?? {}));
@@ -108,6 +236,7 @@ async function fetchWithEsiLogging(url, options = {}, queueMetadata = null) {
     await scheduleEsiRequest();
     const response = await fetch(url, options);
     const responseHeaders = headersToObject(response.headers);
+    updateEsiRateLimitState(responseHeaders, response.status);
     const logDetails = {
       url,
       method,
@@ -700,12 +829,14 @@ function queueAccountDataRequests(account) {
 
 function scheduleEsiRequest() {
   const scheduled = esiRateLimiter.then(async () => {
+    const { minIntervalMs, blockedUntil } = getEsiRateLimitConstraints();
     const now = Date.now();
-    const waitMs = Math.max(0, esiNextRequestAt - now);
+    const earliestNext = Math.max(esiNextRequestAt, blockedUntil);
+    const waitMs = Math.max(0, earliestNext - now);
     if (waitMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
-    esiNextRequestAt = Date.now() + esiRateLimitMs;
+    esiNextRequestAt = Date.now() + minIntervalMs;
   });
   esiRateLimiter = scheduled.catch(() => {});
   return scheduled;
@@ -734,9 +865,15 @@ function emitEsiQueue() {
 }
 
 function getEsiQueuePayload() {
+  const { minIntervalMs, blockedUntil } = getEsiRateLimitConstraints();
   return {
     items: esiQueue,
     queueRunSeconds: config.esi.queueRunSeconds ?? 12,
+    rateLimit: {
+      baseIntervalMs: esiRateLimitMs,
+      minIntervalMs,
+      blockedUntil
+    },
     updatedAt: new Date().toISOString()
   };
 }

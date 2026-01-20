@@ -8,6 +8,11 @@ const state = {
   esiQueue: [],
   esiQueueMeta: {
     queueRunSeconds: 12,
+    rateLimit: {
+      baseIntervalMs: 500,
+      minIntervalMs: 500,
+      blockedUntil: 0
+    },
     updatedAt: null
   },
   socketConnected: false,
@@ -610,6 +615,27 @@ function createEsiQueuePanel(tasks, moduleData) {
       moduleData?.homePanel?.description ??
       'Only your in-flight ESI requests are shown.'
   });
+  const rateLimit = state.esiQueueMeta.rateLimit ?? {};
+  const baseIntervalMs = rateLimit.baseIntervalMs ?? 500;
+  const minIntervalMs = rateLimit.minIntervalMs ?? baseIntervalMs;
+  const blockedUntil = rateLimit.blockedUntil ?? 0;
+  const now = Date.now();
+  const isBlocked = blockedUntil > now;
+  const safeMinIntervalMs = Math.max(minIntervalMs, baseIntervalMs);
+  const intervalRatio = safeMinIntervalMs / baseIntervalMs;
+  const timeDilationPercent = isBlocked
+    ? 0
+    : Math.min(100, Math.round((baseIntervalMs / safeMinIntervalMs) * 100));
+  const tidi = document.createElement('div');
+  tidi.className = 'queue-tidi';
+  tidi.title = `${timeDilationPercent}% TiDi`;
+  tidi.innerHTML = `
+    <div class="queue-tidi-ring" style="--tidi: ${timeDilationPercent};">
+      <span>${timeDilationPercent}%</span>
+    </div>
+    <div class="queue-tidi-label">TiDi</div>
+  `;
+  card.appendChild(tidi);
   const list = document.createElement('ul');
   list.className = 'panel-list';
   const queueRunSeconds = state.esiQueueMeta.queueRunSeconds ?? 12;
@@ -624,7 +650,8 @@ function createEsiQueuePanel(tasks, moduleData) {
     const position = getEsiQueuePosition(task.id);
     const queuedAt = new Date(task.queuedAt).getTime();
     const elapsedSeconds = (Date.now() - queuedAt) / 1000;
-    const etaSeconds = queueRunSeconds * (position ?? 1) - elapsedSeconds;
+    const etaSeconds =
+      queueRunSeconds * (position ?? 1) * intervalRatio - elapsedSeconds;
     item.innerHTML = `
       <div class="queue-row">
         <span class="queue-name">${task.taskName} [${position ?? '—'}]</span>
@@ -2431,11 +2458,24 @@ function setupSocket() {
   socket.on('esi:queue', (queue) => {
     if (Array.isArray(queue)) {
       state.esiQueue = queue;
-      state.esiQueueMeta = { queueRunSeconds: 12, updatedAt: null };
+      state.esiQueueMeta = {
+        queueRunSeconds: 12,
+        rateLimit: {
+          baseIntervalMs: 500,
+          minIntervalMs: 500,
+          blockedUntil: 0
+        },
+        updatedAt: null
+      };
     } else {
       state.esiQueue = queue?.items ?? [];
       state.esiQueueMeta = {
         queueRunSeconds: queue?.queueRunSeconds ?? 12,
+        rateLimit: {
+          baseIntervalMs: queue?.rateLimit?.baseIntervalMs ?? 500,
+          minIntervalMs: queue?.rateLimit?.minIntervalMs ?? 500,
+          blockedUntil: queue?.rateLimit?.blockedUntil ?? 0
+        },
         updatedAt: queue?.updatedAt ?? null
       };
     }
