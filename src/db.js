@@ -40,7 +40,11 @@ export function openDatabase(path) {
   ensureColumn(db, 'characters', 'updated_at', 'TEXT');
   ensureColumn(db, 'characters', 'refresh_token', 'TEXT');
   ensureColumn(db, 'characters', 'refresh_token_hash', 'TEXT');
+  ensureColumn(db, 'characters', 'esi_access_token', 'TEXT');
+  ensureColumn(db, 'characters', 'esi_access_token_expires_at', 'TEXT');
   ensureColumn(db, 'accounts', 'refresh_token', 'TEXT');
+  ensureColumn(db, 'accounts', 'esi_access_token', 'TEXT');
+  ensureColumn(db, 'accounts', 'esi_access_token_expires_at', 'TEXT');
   return db;
 }
 
@@ -62,6 +66,8 @@ export function saveAccount({
   name,
   accessToken,
   refreshToken,
+  esiAccessToken,
+  esiAccessTokenExpiresAt,
   characterNames,
   moduleData,
   moduleAccountModifiers
@@ -79,8 +85,8 @@ export function saveAccount({
   }
 
   const insertAccount = db.prepare(
-    `INSERT INTO accounts (type, name, refresh_token, access_token_hash, refresh_token_hash, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO accounts (type, name, refresh_token, access_token_hash, refresh_token_hash, esi_access_token, esi_access_token_expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const result = insertAccount.run(
     accountRecord.type,
@@ -88,14 +94,16 @@ export function saveAccount({
     refreshToken ?? null,
     accountRecord.accessTokenHash,
     accountRecord.refreshTokenHash,
+    esiAccessToken ?? null,
+    esiAccessTokenExpiresAt ?? null,
     createdAt
   );
 
   const accountId = result.lastInsertRowid;
   if (Array.isArray(characterNames)) {
     const insertCharacter = db.prepare(
-      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, esi_access_token, esi_access_token_expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     characterNames.forEach((characterName) => {
       const {
@@ -105,7 +113,9 @@ export function saveAccount({
         corporationName,
         allianceId,
         allianceName,
-        refreshToken
+        refreshToken,
+        esiAccessToken: characterEsiAccessToken,
+        esiAccessTokenExpiresAt: characterEsiAccessTokenExpiresAt
       } = normalizeCharacterDetails(characterName);
       const timestamp = new Date().toISOString();
       const refreshTokenHash = refreshToken ? hashToken(refreshToken) : null;
@@ -119,6 +129,8 @@ export function saveAccount({
         allianceName,
         refreshToken ?? null,
         refreshTokenHash,
+        characterEsiAccessToken ?? null,
+        characterEsiAccessTokenExpiresAt ?? null,
         createdAt,
         timestamp
       );
@@ -186,7 +198,11 @@ export function getAccountByCharacterName(db, characterName) {
     .get(characterName);
 }
 
-export function updateAccountTokens(db, accountId, { accessToken, refreshToken }) {
+export function updateAccountTokens(
+  db,
+  accountId,
+  { accessToken, refreshToken, esiAccessToken, esiAccessTokenExpiresAt }
+) {
   if (!accountId || !accessToken) {
     return;
   }
@@ -194,12 +210,40 @@ export function updateAccountTokens(db, accountId, { accessToken, refreshToken }
     `UPDATE accounts
      SET refresh_token = ?,
          access_token_hash = ?,
-         refresh_token_hash = ?
+         refresh_token_hash = ?,
+         esi_access_token = ?,
+         esi_access_token_expires_at = ?
      WHERE id = ?`
   ).run(
     refreshToken ?? null,
     hashToken(accessToken),
     refreshToken ? hashToken(refreshToken) : null,
+    esiAccessToken ?? null,
+    esiAccessTokenExpiresAt ?? null,
+    accountId
+  );
+}
+
+export function updateAccountEsiTokens(
+  db,
+  accountId,
+  { refreshToken, esiAccessToken, esiAccessTokenExpiresAt }
+) {
+  if (!accountId || !refreshToken) {
+    return;
+  }
+  db.prepare(
+    `UPDATE accounts
+     SET refresh_token = ?,
+         refresh_token_hash = ?,
+         esi_access_token = ?,
+         esi_access_token_expires_at = ?
+     WHERE id = ?`
+  ).run(
+    refreshToken,
+    hashToken(refreshToken),
+    esiAccessToken ?? null,
+    esiAccessTokenExpiresAt ?? null,
     accountId
   );
 }
@@ -223,7 +267,9 @@ export function addCharacterToAccount(db, accountId, characterInput) {
     corporationName,
     allianceId,
     allianceName,
-    refreshToken
+    refreshToken,
+    esiAccessToken,
+    esiAccessTokenExpiresAt
   } = normalizeCharacterDetails(characterInput);
   if (!accountId || !characterName) {
     return { added: false };
@@ -251,7 +297,11 @@ export function addCharacterToAccount(db, accountId, characterInput) {
       });
     }
     if (refreshToken) {
-      updateCharacterTokens(db, existing.id, refreshToken);
+      updateCharacterTokens(db, existing.id, {
+        refreshToken,
+        esiAccessToken,
+        esiAccessTokenExpiresAt
+      });
     }
     return { added: false, existingId: existing.id };
   }
@@ -259,8 +309,8 @@ export function addCharacterToAccount(db, accountId, characterInput) {
   const refreshTokenHash = refreshToken ? hashToken(refreshToken) : null;
   const result = db
     .prepare(
-      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (account_id, name, character_id, corporation_id, corporation_name, alliance_id, alliance_name, refresh_token, refresh_token_hash, esi_access_token, esi_access_token_expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       accountId,
@@ -272,13 +322,19 @@ export function addCharacterToAccount(db, accountId, characterInput) {
       allianceName,
       refreshToken ?? null,
       refreshTokenHash,
+      esiAccessToken ?? null,
+      esiAccessTokenExpiresAt ?? null,
       createdAt,
       createdAt
     );
   return { added: true, characterId: result.lastInsertRowid };
 }
 
-export function updateCharacterTokens(db, characterRowId, refreshToken) {
+export function updateCharacterTokens(
+  db,
+  characterRowId,
+  { refreshToken, esiAccessToken, esiAccessTokenExpiresAt }
+) {
   if (!characterRowId || !refreshToken) {
     return;
   }
@@ -286,11 +342,15 @@ export function updateCharacterTokens(db, characterRowId, refreshToken) {
     `UPDATE characters
      SET refresh_token = ?,
          refresh_token_hash = ?,
+         esi_access_token = ?,
+         esi_access_token_expires_at = ?,
          updated_at = ?
      WHERE id = ?`
   ).run(
     refreshToken,
     hashToken(refreshToken),
+    esiAccessToken ?? null,
+    esiAccessTokenExpiresAt ?? null,
     new Date().toISOString(),
     characterRowId
   );
@@ -339,7 +399,9 @@ function normalizeCharacterDetails(characterInput) {
       corporationName: null,
       allianceId: null,
       allianceName: null,
-      refreshToken: null
+      refreshToken: null,
+      esiAccessToken: null,
+      esiAccessTokenExpiresAt: null
     };
   }
   return {
@@ -349,7 +411,9 @@ function normalizeCharacterDetails(characterInput) {
     corporationName: characterInput?.corporationName ?? null,
     allianceId: characterInput?.allianceId ?? null,
     allianceName: characterInput?.allianceName ?? null,
-    refreshToken: characterInput?.refreshToken ?? null
+    refreshToken: characterInput?.refreshToken ?? null,
+    esiAccessToken: characterInput?.esiAccessToken ?? null,
+    esiAccessTokenExpiresAt: characterInput?.esiAccessTokenExpiresAt ?? null
   };
 }
 
