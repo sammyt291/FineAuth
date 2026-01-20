@@ -14,9 +14,11 @@ import {
   addCharacterToAccount,
   getAccountById,
   updateCharacterDetails,
+  updateCharacterTokens,
   getAccountByName,
   getAccountByCharacterName,
   updateAccountTokens,
+  updateAccountEsiTokens,
   upsertModuleAccountData,
   getModuleAccountData
 } from './db.js';
@@ -451,11 +453,7 @@ function createServer() {
       }
       try {
         const accessToken = character.refresh_token
-          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
-              taskName: `Refresh ESI access token: ${character.name}`,
-              accountName: targetAccount.name,
-              type: 'auth'
-            })
+          ? await fetchCharacterEsiAccessToken(character, targetAccount.name)
           : character.name === targetAccount.name
             ? await fetchEsiAccessToken(targetAccount)
             : null;
@@ -510,11 +508,7 @@ function createServer() {
       }
       try {
         const accessToken = character.refresh_token
-          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
-              taskName: `Refresh ESI access token: ${character.name}`,
-              accountName: targetAccount.name,
-              type: 'auth'
-            })
+          ? await fetchCharacterEsiAccessToken(character, targetAccount.name)
           : character.name === targetAccount.name
             ? await fetchEsiAccessToken(targetAccount)
             : null;
@@ -592,11 +586,7 @@ function createServer() {
       }
       try {
         const accessToken = character.refresh_token
-          ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
-              taskName: `Refresh ESI access token: ${character.name}`,
-              accountName: targetAccount.name,
-              type: 'auth'
-            })
+          ? await fetchCharacterEsiAccessToken(character, targetAccount.name)
           : character.name === targetAccount.name
             ? await fetchEsiAccessToken(targetAccount)
             : null;
@@ -861,6 +851,9 @@ app.get('/callback', async (req, res) => {
     }
 
     const tokenData = await tokenResponse.json();
+    const esiAccessTokenExpiresAt = buildEsiAccessTokenExpiresAt(
+      tokenData.expires_in
+    );
     const verifyResponse = await fetchWithEsiLogging(
       'https://login.eveonline.com/oauth/verify',
       {
@@ -919,6 +912,8 @@ app.get('/callback', async (req, res) => {
         name: verifyData.CharacterName,
         characterId: verifyData.CharacterID,
         refreshToken: tokenData.refresh_token,
+        esiAccessToken: tokenData.access_token,
+        esiAccessTokenExpiresAt,
         ...characterDetails
       });
       logEvent('account', 'Character added to account', {
@@ -955,12 +950,16 @@ app.get('/callback', async (req, res) => {
     if (existingAccount) {
       updateAccountTokens(db, existingAccount.id, {
         accessToken,
-        refreshToken: tokenData.refresh_token
+        refreshToken: tokenData.refresh_token,
+        esiAccessToken: tokenData.access_token,
+        esiAccessTokenExpiresAt
       });
       addCharacterToAccount(db, existingAccount.id, {
         name: verifyData.CharacterName,
         characterId: verifyData.CharacterID,
         refreshToken: tokenData.refresh_token,
+        esiAccessToken: tokenData.access_token,
+        esiAccessTokenExpiresAt,
         ...characterDetails
       });
       loginAccount = {
@@ -980,11 +979,15 @@ app.get('/callback', async (req, res) => {
         name: verifyData.CharacterName,
         accessToken,
         refreshToken: tokenData.refresh_token,
+        esiAccessToken: tokenData.access_token,
+        esiAccessTokenExpiresAt,
         characterNames: [
           {
             name: verifyData.CharacterName,
             characterId: verifyData.CharacterID,
             refreshToken: tokenData.refresh_token,
+            esiAccessToken: tokenData.access_token,
+            esiAccessTokenExpiresAt,
             ...characterDetails
           }
         ],
@@ -1050,6 +1053,30 @@ function cryptoRandom() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+function buildEsiAccessTokenExpiresAt(expiresInSeconds) {
+  const parsed = Number.parseInt(expiresInSeconds, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return new Date(Date.now() + parsed * 1000).toISOString();
+}
+
+function getValidEsiAccessToken(target, skewSeconds = 30) {
+  const accessToken = target?.esi_access_token;
+  const expiresAt = target?.esi_access_token_expires_at;
+  if (!accessToken || !expiresAt) {
+    return null;
+  }
+  const expiry = new Date(expiresAt).getTime();
+  if (!Number.isFinite(expiry)) {
+    return null;
+  }
+  if (expiry - Date.now() <= skewSeconds * 1000) {
+    return null;
+  }
+  return accessToken;
+}
+
 async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
   const ttlMs = (ttlSeconds ?? config.esi.cacheSeconds ?? 45) * 1000;
   const cacheKey = url;
@@ -1076,6 +1103,10 @@ async function fetchEsiJson(url, { cache = true, ttlSeconds } = {}) {
 async function fetchEsiAccessToken(account) {
   if (!account?.refresh_token || !config.esi.clientId || !config.esi.clientSecret) {
     return null;
+  }
+  const cachedToken = getValidEsiAccessToken(account);
+  if (cachedToken) {
+    return cachedToken;
   }
   const credentials = Buffer.from(
     `${config.esi.clientId}:${config.esi.clientSecret}`
@@ -1110,7 +1141,16 @@ async function fetchEsiAccessToken(account) {
     return null;
   }
   const tokenData = await response.json();
-  return tokenData.access_token ?? null;
+  const accessToken = tokenData.access_token ?? null;
+  if (!accessToken) {
+    return null;
+  }
+  updateAccountEsiTokens(db, account.id, {
+    refreshToken: tokenData.refresh_token ?? account.refresh_token,
+    esiAccessToken: accessToken,
+    esiAccessTokenExpiresAt: buildEsiAccessTokenExpiresAt(tokenData.expires_in)
+  });
+  return accessToken;
 }
 
 async function fetchEsiAccessTokenForRefreshToken(refreshToken, queueMetadata) {
@@ -1146,7 +1186,42 @@ async function fetchEsiAccessTokenForRefreshToken(refreshToken, queueMetadata) {
     return null;
   }
   const tokenData = await response.json();
-  return tokenData.access_token ?? null;
+  const accessToken = tokenData.access_token ?? null;
+  if (!accessToken) {
+    return null;
+  }
+  return {
+    accessToken,
+    refreshToken: tokenData.refresh_token ?? refreshToken,
+    expiresAt: buildEsiAccessTokenExpiresAt(tokenData.expires_in)
+  };
+}
+
+async function fetchCharacterEsiAccessToken(character, accountName) {
+  if (!character?.refresh_token) {
+    return null;
+  }
+  const cachedToken = getValidEsiAccessToken(character);
+  if (cachedToken) {
+    return cachedToken;
+  }
+  const tokenData = await fetchEsiAccessTokenForRefreshToken(
+    character.refresh_token,
+    {
+      taskName: `Refresh ESI access token: ${character.name}`,
+      accountName,
+      type: 'auth'
+    }
+  );
+  if (!tokenData?.accessToken) {
+    return null;
+  }
+  updateCharacterTokens(db, character.id, {
+    refreshToken: tokenData.refreshToken,
+    esiAccessToken: tokenData.accessToken,
+    esiAccessTokenExpiresAt: tokenData.expiresAt
+  });
+  return tokenData.accessToken;
 }
 
 async function fetchEsiAuthorizedJson(url, accessToken, queueMetadata) {
@@ -1342,11 +1417,7 @@ async function syncAccountEsiData(account) {
     }
 
     const characterAccessToken = character.refresh_token
-      ? await fetchEsiAccessTokenForRefreshToken(character.refresh_token, {
-          taskName: `Refresh ESI access token: ${character.name}`,
-          accountName: account.name,
-          type: 'auth'
-        })
+      ? await fetchCharacterEsiAccessToken(character, account.name)
       : character.name === account.name
         ? accountAccessToken
         : null;
